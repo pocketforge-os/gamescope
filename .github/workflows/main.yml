@@ -26,7 +26,7 @@ jobs:
         run: |
           pacman-key --init
           pacman -Syu --noconfirm
-          pacman -S --noconfirm ca-certificates curl git meson glslang libcap sdl2 vulkan-headers \
+          pacman -S --noconfirm ca-certificates curl git meson glslang libcap sdl2 vulkan-headers vulkan-icd-loader \
             libx11 libxmu libxcomposite libxrender libxres libxtst \
             libxkbcommon libdrm libinput wayland-protocols benchmark \
             xorg-xwayland pipewire cmake libavif libheif aom rav1e \
