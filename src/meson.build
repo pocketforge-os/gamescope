@@ -114,6 +114,7 @@ src = [
   'vblankmanager.cpp',
   'rendervulkan.cpp',
   'output_staging.cpp',
+  'output_rotation.cpp',
   'log.cpp',
   'ime.cpp',
   'mangoapp.cpp',

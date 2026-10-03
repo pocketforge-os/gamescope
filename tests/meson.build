@@ -9,6 +9,13 @@ test_output_staging = executable(
 )
 test('output-staging', test_output_staging)
 
+test_output_rotation = executable(
+	'test_output_rotation',
+	[srcdir / 'output_rotation.cpp', 'test_output_rotation.cpp'],
+	include_directories: [srcdir],
+)
+test('output-rotation', test_output_rotation)
+
 test_output_staging_vulkan = executable(
 	'test_output_staging_vulkan',
 	'test_output_staging_vulkan.cpp',
