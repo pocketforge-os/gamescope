@@ -32,6 +32,7 @@
 #include "wlr_end.hpp"
 
 #include "rendervulkan.hpp"
+#include "vulkan_present_features.h"
 #include "main.hpp"
 #include "steamcompmgr.hpp"
 #include "log.hpp"
@@ -445,6 +446,8 @@ bool CVulkanDevice::createDevice()
 	bool hasDrmProps = vulkan_has_drm_props();
 	bool supportsForeignQueue = false;
 	bool supportsHDRMetadata = false;
+	bool supportsPresentIdExtension = false;
+	bool supportsPresentWaitExtension = false;
 	for (const auto& ext : m_supportedExts) {
 		if ( strcmp(ext.extensionName, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME) == 0 )
 			m_bSupportsModifiers = true;
@@ -454,6 +457,12 @@ bool CVulkanDevice::createDevice()
 
 		if ( strcmp(ext.extensionName, VK_EXT_HDR_METADATA_EXTENSION_NAME) == 0 )
 			supportsHDRMetadata = true;
+
+		if ( strcmp(ext.extensionName, VK_KHR_PRESENT_ID_EXTENSION_NAME) == 0 )
+			supportsPresentIdExtension = true;
+
+		if ( strcmp(ext.extensionName, VK_KHR_PRESENT_WAIT_EXTENSION_NAME) == 0 )
+			supportsPresentWaitExtension = true;
 	}
 
 	vk_log.infof( "physical device %s DRM format modifiers", m_bSupportsModifiers ? "supports" : "does not support" );
@@ -553,8 +562,9 @@ bool CVulkanDevice::createDevice()
 	};
 
 	std::vector< const char * > enabledExtensions;
+	const bool usesVulkanSwapchain = GetBackend()->UsesVulkanSwapchain();
 
-	if ( GetBackend()->UsesVulkanSwapchain() )
+	if ( usesVulkanSwapchain )
 	{
 		enabledExtensions.push_back( VK_KHR_SWAPCHAIN_EXTENSION_NAME );
 		enabledExtensions.push_back( VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME );
@@ -606,6 +616,41 @@ bool CVulkanDevice::createDevice()
 	if ( anyMissing )
 		return false;
 
+	VulkanPresentCapabilities presentCapabilities = {
+		.presentIdExtension = supportsPresentIdExtension,
+		.presentWaitExtension = supportsPresentWaitExtension,
+	};
+
+	if ( usesVulkanSwapchain )
+	{
+		VkPhysicalDevicePresentWaitFeaturesKHR supportedPresentWaitFeatures = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
+		};
+		VkPhysicalDevicePresentIdFeaturesKHR supportedPresentIdFeatures = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR,
+			.pNext = &supportedPresentWaitFeatures,
+		};
+		VkPhysicalDeviceFeatures2 supportedFeatures2 = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+			.pNext = &supportedPresentIdFeatures,
+		};
+		vk.GetPhysicalDeviceFeatures2( physDev(), &supportedFeatures2 );
+
+		presentCapabilities.presentIdFeature = supportedPresentIdFeatures.presentId;
+		presentCapabilities.presentWaitFeature = supportedPresentWaitFeatures.presentWait;
+	}
+
+	const VulkanPresentFeatureSelection presentFeatureSelection =
+		selectVulkanPresentFeatures( usesVulkanSwapchain, presentCapabilities );
+	if ( !presentFeatureSelection.supported )
+	{
+		if ( !presentCapabilities.presentIdFeature )
+			vk_log.errorf( "Missing required feature: presentId" );
+		if ( !presentCapabilities.presentWaitFeature )
+			vk_log.errorf( "Missing required feature: presentWait" );
+		return false;
+	}
+
 #if 0
 	VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5 = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR,
@@ -624,18 +669,20 @@ bool CVulkanDevice::createDevice()
 	VkPhysicalDevicePresentWaitFeaturesKHR presentWaitFeatures = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
 		.pNext = &features13,
-		.presentWait = VK_TRUE,
+		.presentWait = presentFeatureSelection.enablePresentWait,
 	};
 
 	VkPhysicalDevicePresentIdFeaturesKHR presentIdFeatures = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR,
 		.pNext = &presentWaitFeatures,
-		.presentId = VK_TRUE,
+		.presentId = presentFeatureSelection.enablePresentId,
 	};
 
 	VkPhysicalDeviceFeatures2 features2 = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-		.pNext = &presentIdFeatures,
+		.pNext = presentFeatureSelection.enablePresentId
+			? static_cast<void *>( &presentIdFeatures )
+			: static_cast<void *>( &features13 ),
 		.features = {
 			.shaderInt16 = m_bSupportsFp16,
 		},

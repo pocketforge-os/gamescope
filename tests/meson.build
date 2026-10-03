@@ -14,3 +14,10 @@ test_convar = executable(
 	cpp_args: gamescope_cpp_args,
 )
 test('convar', test_convar)
+
+test_vulkan_present_features = executable(
+	'test_vulkan_present_features',
+	['test_vulkan_present_features.cpp'],
+	include_directories: [srcdir],
+)
+test('vulkan_present_features', test_vulkan_present_features)
