@@ -1,0 +1,36 @@
+#version 450
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_scalar_block_layout : require
+
+#include "descriptor_set.h"
+
+layout(
+  local_size_x = 8,
+  local_size_y = 8,
+  local_size_z = 1) in;
+
+layout(binding = 0, scalar)
+uniform output_rotation_t {
+    // gamescope::output_rotation::Transform
+    uint u_transform;
+};
+
+void main() {
+    uvec2 nativeCoord = uvec2(gl_GlobalInvocationID.xy);
+    uvec2 nativeSize = imageSize(dst);
+    if (nativeCoord.x >= nativeSize.x || nativeCoord.y >= nativeSize.y)
+        return;
+
+    ivec2 logicalSize = textureSize(s_samplers[0], 0);
+    ivec2 logicalCoord;
+    if (u_transform == 1) {
+        // Rotate90 inverse: native (u,v) -> logical (v,H-1-u).
+        logicalCoord = ivec2(nativeCoord.y, logicalSize.y - 1 - int(nativeCoord.x));
+    } else {
+        // Rotate270 inverse: native (u,v) -> logical (W-1-v,u).
+        logicalCoord = ivec2(logicalSize.x - 1 - int(nativeCoord.y), nativeCoord.x);
+    }
+
+    imageStore(dst, ivec2(nativeCoord), texelFetch(s_samplers[0], logicalCoord, 0));
+}

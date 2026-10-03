@@ -1942,7 +1942,7 @@ LiftoffStateCacheEntry FrameInfoToLiftoffStateCacheEntry( struct drm_t *drm, con
 		uint64_t crtcW = srcWidth / frameInfo->layers[ i ].scale.x;
 		uint64_t crtcH = srcHeight / frameInfo->layers[ i ].scale.y;
 
-		if (g_bRotated)
+		if ( g_bRotated && !frameInfo->isNativeOutput )
 		{
 			int64_t imageH = frameInfo->layers[ i ].tex->contentHeight() / frameInfo->layers[ i ].scale.y;
 
@@ -2676,21 +2676,24 @@ drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, boo
 			liftoff_layer_set_property( drm->lo_layers[ i ], "SRC_H", entry.layerState[i].srcH );
 
 			uint64_t ulOrientation = DRM_MODE_ROTATE_0;
-			switch ( drm->pConnector->GetCurrentOrientation() )
+			if ( !frameInfo->isNativeOutput )
 			{
-			default:
-			case GAMESCOPE_PANEL_ORIENTATION_0:
-				ulOrientation = DRM_MODE_ROTATE_0;
-				break;
-			case GAMESCOPE_PANEL_ORIENTATION_270:
-				ulOrientation = DRM_MODE_ROTATE_270;
-				break;
-			case GAMESCOPE_PANEL_ORIENTATION_90:
-				ulOrientation = DRM_MODE_ROTATE_90;
-				break;
-			case GAMESCOPE_PANEL_ORIENTATION_180:
-				ulOrientation = DRM_MODE_ROTATE_180;
-				break;
+				switch ( drm->pConnector->GetCurrentOrientation() )
+				{
+				default:
+				case GAMESCOPE_PANEL_ORIENTATION_0:
+					ulOrientation = DRM_MODE_ROTATE_0;
+					break;
+				case GAMESCOPE_PANEL_ORIENTATION_270:
+					ulOrientation = DRM_MODE_ROTATE_270;
+					break;
+				case GAMESCOPE_PANEL_ORIENTATION_90:
+					ulOrientation = DRM_MODE_ROTATE_90;
+					break;
+				case GAMESCOPE_PANEL_ORIENTATION_180:
+					ulOrientation = DRM_MODE_ROTATE_180;
+					break;
+				}
 			}
 			liftoff_layer_set_property( drm->lo_layers[ i ], "rotation", ulOrientation );
 
@@ -3499,6 +3502,28 @@ bool drm_supports_color_mgmt(struct drm_t *drm)
 	return drm->pPrimaryPlane->GetProperties().AMD_PLANE_CTM.has_value() && drm->pPrimaryPlane->GetProperties().AMD_PLANE_BLEND_TF.has_value();
 }
 
+static const char *direct_scanout_rejection_name(
+	gamescope::output_rotation::DirectScanoutRejection rejection )
+{
+	using gamescope::output_rotation::DirectScanoutRejection;
+	switch ( rejection )
+	{
+		case DirectScanoutRejection::Accepted: return "accepted";
+		case DirectScanoutRejection::NoSoftwareRotation: return "software rotation inactive";
+		case DirectScanoutRejection::MultipleLayers: return "multiple layers";
+		case DirectScanoutRejection::NotOpaqueBaseLayer: return "not an opaque base layer";
+		case DirectScanoutRejection::NonNativeExtent: return "non-native buffer extent";
+		case DirectScanoutRejection::ContentExtentMismatch: return "content extent mismatch";
+		case DirectScanoutRejection::ClientTransformNotNormal: return "client transform is not normal or is unknown";
+		case DirectScanoutRejection::KmsTransformNotNormal: return "KMS transform is not normal";
+		case DirectScanoutRejection::IncompatibleFormat: return "incompatible primary-plane format";
+		case DirectScanoutRejection::AmbiguousModifier: return "implicit or invalid modifier";
+		case DirectScanoutRejection::IncompatibleModifier: return "incompatible primary-plane modifier";
+		case DirectScanoutRejection::FramebufferNotImportable: return "framebuffer import failed";
+	}
+	return "unknown";
+}
+
 std::span<const uint32_t> drm_get_valid_refresh_rates( struct drm_t *drm )
 {
 	if ( drm && drm->pConnector )
@@ -3626,13 +3651,29 @@ namespace gamescope
 
 			bNeedsFullComposite |= !!(g_uCompositeDebug & CompositeDebugFlag::Heatmap);
 
+			FrameInfo_t nativeDirectFrameInfo = {};
+			const FrameInfo_t *pDirectFrameInfo = pFrameInfo;
+			if ( UsesVulkanOutputRotation() )
+			{
+				// Separate logical planes cannot be rotated by KMS on this path.
+				// Only an already-native single client buffer may bypass composition.
+				bNeedsFullComposite |= bWantsPartialComposite;
+				if ( !bNeedsFullComposite )
+				{
+					if ( PrepareNativeDirectFrame( pFrameInfo, &nativeDirectFrameInfo ) )
+						pDirectFrameInfo = &nativeDirectFrameInfo;
+					else
+						bNeedsFullComposite = true;
+				}
+			}
+
 			bool bDoComposite = true;
 			if ( !bNeedsFullComposite && !bWantsPartialComposite )
 			{
 				// Save the pending mode so it can be restored after drm_rollback() and carried
 				// over to the composite path
 				std::shared_ptr<gamescope::BackendBlob> pPendingModeId = g_DRM.pending.mode_id;
-				int ret = drm_prepare( &g_DRM, bAsync, pFrameInfo );
+				int ret = drm_prepare( &g_DRM, bAsync, pDirectFrameInfo );
 				if ( ret == 0 )
 					bDoComposite = false;
 				else if ( ret == -EACCES )
@@ -3652,8 +3693,9 @@ namespace gamescope
 				if ( pFrameInfo->layerCount == 2 )
 					m_nLastSingleOverlayZPos = pFrameInfo->layers[1].zpos;
 				const VulkanOutputCounters counters = vulkan_get_output_counters();
-				drm_log.debugf( "output path=direct composition_dispatches=%llu staging_copies=%llu",
+				drm_log.debugf( "output path=direct composition_dispatches=%llu output_rotations=%llu staging_copies=%llu",
 					static_cast<unsigned long long>( counters.compositionDispatches ),
+					static_cast<unsigned long long>( counters.outputRotations ),
 					static_cast<unsigned long long>( counters.stagingCopies ) );
 
 				return Commit( pFrameInfo );
@@ -3737,13 +3779,16 @@ namespace gamescope
 				return -EINVAL;
 			}
 			const VulkanOutputCounters counters = vulkan_get_output_counters();
-			drm_log.debugf( "output path=composited composition_dispatches=%llu staging_copies=%llu",
+			drm_log.debugf( "output path=composited composition_dispatches=%llu output_rotations=%llu staging_copies=%llu",
 				static_cast<unsigned long long>( counters.compositionDispatches ),
+				static_cast<unsigned long long>( counters.outputRotations ),
 				static_cast<unsigned long long>( counters.stagingCopies ) );
 
 			vulkan_wait( *oCompositeResult, true );
 
 			FrameInfo_t presentCompFrameInfo = {};
+			presentCompFrameInfo.isNativeOutput =
+				g_output.outputTransform != output_rotation::Transform::Normal;
 			presentCompFrameInfo.allowVRR = pFrameInfo->allowVRR;
 			presentCompFrameInfo.outputEncodingEOTF = pFrameInfo->outputEncodingEOTF;
 
@@ -3833,6 +3878,13 @@ namespace gamescope
 
 			if ( ret != 0 )
 			{
+				if ( presentCompFrameInfo.isNativeOutput )
+				{
+					xwm_log.errorf( "Failed to prepare native software-rotated output: %s",
+						strerror( -ret ) );
+					return ret;
+				}
+
 				if ( g_DRM.current.mode_id == 0 )
 				{
 					xwm_log.errorf("We failed our modeset and have no mode to fall back to! (Initial modeset failed?): %s", strerror(-ret));
@@ -3964,6 +4016,18 @@ namespace gamescope
 			return g_bSupportsAsyncFlips;
 		}
 
+		virtual bool UsesVulkanOutputRotation() const override
+		{
+			if ( !g_DRM.pConnector || !g_DRM.pPrimaryPlane )
+				return false;
+
+			const output_rotation::Transform transform =
+				output_rotation::transformFromPanelOrientation(
+					g_DRM.pConnector->GetCurrentOrientation() );
+			return transform != output_rotation::Transform::Normal &&
+				!g_DRM.pPrimaryPlane->GetProperties().rotation.has_value();
+		}
+
 		virtual bool UsesVulkanSwapchain() const override
 		{
 			return false;
@@ -4043,6 +4107,73 @@ namespace gamescope
 		bool SupportsColorManagement() const
 		{
 			return drm_supports_color_mgmt( &g_DRM );
+		}
+
+		output_rotation::Transform OutputTransform() const
+		{
+			if ( !UsesVulkanOutputRotation() )
+				return output_rotation::Transform::Normal;
+			return output_rotation::transformFromPanelOrientation(
+				g_DRM.pConnector->GetCurrentOrientation() );
+		}
+
+		bool PrepareNativeDirectFrame( const FrameInfo_t *pFrameInfo,
+			FrameInfo_t *pNativeFrameInfo ) const
+		{
+			using namespace output_rotation;
+			const Transform outputTransform = OutputTransform();
+			if ( outputTransform == Transform::Normal || pFrameInfo->layerCount != 1 )
+			{
+				const DirectScanoutDecision decision = directScanoutDecision( {
+					.outputTransform = outputTransform,
+					.layerCount = uint32_t( pFrameInfo->layerCount ),
+				} );
+				drm_log.debugf( "native direct scanout rejected: %s",
+					direct_scanout_rejection_name( decision.rejection ) );
+				return false;
+			}
+
+			const FrameInfo_t::Layer_t &layer = pFrameInfo->layers[0];
+			const uint32_t drmFormat = layer.tex ? layer.tex->drmFormat() : DRM_FORMAT_INVALID;
+			const bool hasDmaBuf = layer.tex && layer.tex->dmabuf().n_planes > 0;
+			const uint64_t modifier = layer.tex
+				? layer.tex->dmabuf().modifier
+				: DRM_FORMAT_MOD_INVALID;
+			const std::span<const uint64_t> primaryModifiers = GetOutputModifiers( drmFormat, false );
+			const bool framebufferImportable = layer.tex && layer.tex->GetBackendFb() &&
+				layer.tex->GetBackendFb()->EnsureImported();
+			const wlserver_vk_swapchain_feedback *pFeedback =
+				steamcompmgr_get_base_layer_swapchain_feedback();
+
+			const DirectScanoutDecision decision = directScanoutDecision( {
+				.outputTransform = outputTransform,
+				.layerCount = uint32_t( pFrameInfo->layerCount ),
+				.logicalExtent = { uint32_t( g_nOutputWidth ), uint32_t( g_nOutputHeight ) },
+				.bufferExtent = layer.tex ? Extent{ layer.tex->width(), layer.tex->height() } : Extent{},
+				.contentExtent = layer.tex ? Extent{ layer.tex->contentWidth(), layer.tex->contentHeight() } : Extent{},
+				.baseLayer = layer.zpos == g_zposBase,
+				.opaque = close_enough( layer.opacity, 1.0f ),
+				.normalClientTransform = pFeedback &&
+					pFeedback->vk_pre_transform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+				.normalKmsTransform = true,
+				.formatCompatible = !primaryModifiers.empty(),
+				.explicitModifier = hasDmaBuf && modifier != DRM_FORMAT_MOD_INVALID,
+				.modifierCompatible = Algorithm::Contains( primaryModifiers, modifier ),
+				.framebufferImportable = framebufferImportable,
+			} );
+			if ( !decision.eligible )
+			{
+				drm_log.debugf( "native direct scanout rejected: %s",
+					direct_scanout_rejection_name( decision.rejection ) );
+				return false;
+			}
+
+			*pNativeFrameInfo = *pFrameInfo;
+			pNativeFrameInfo->isNativeOutput = true;
+			pNativeFrameInfo->layers[0].offset = { 0.0f, 0.0f };
+			pNativeFrameInfo->layers[0].scale = { 1.0f, 1.0f };
+			pNativeFrameInfo->layers[0].blackBorder = false;
+			return true;
 		}
 
 		int Commit( const FrameInfo_t *pFrameInfo )

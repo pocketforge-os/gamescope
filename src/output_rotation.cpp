@@ -33,6 +33,19 @@ Extent transformExtent( Extent logicalExtent, Transform transform )
 	return logicalExtent;
 }
 
+Transform transformFromPanelOrientation( GamescopePanelOrientation orientation )
+{
+	switch ( orientation )
+	{
+		case GAMESCOPE_PANEL_ORIENTATION_90:
+			return Transform::Rotate90;
+		case GAMESCOPE_PANEL_ORIENTATION_270:
+			return Transform::Rotate270;
+		default:
+			return Transform::Normal;
+	}
+}
+
 std::optional<Layout> makeLayout( Extent logicalExtent, Transform transform,
 	uint32_t bytesPerPixel, uint32_t rowPitchAlignment )
 {

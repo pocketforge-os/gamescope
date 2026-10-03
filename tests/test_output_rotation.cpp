@@ -60,6 +60,11 @@ std::vector<uint32_t> transformImage( std::span<const uint32_t> source,
 
 void test_asymmetric_pixels_and_inverse_mappings()
 {
+	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_90 ) == Transform::Rotate90 );
+	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_270 ) == Transform::Rotate270 );
+	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_0 ) == Transform::Normal );
+	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_180 ) == Transform::Normal );
+
 	// Logical 4x3 image. Every edge, row, and column is distinguishable.
 	const std::array<uint32_t, 12> source = {
 		0xA1, 0xB2, 0xC3, 0xD4,
@@ -133,7 +138,12 @@ void test_layout_stride_damage_cursor_and_overlay_coordinates()
 		Rect{ 470, 100, 200, 300 } );
 	CHECK( logicalToNative( damage, logical, Transform::Rotate270 ) ==
 		Rect{ 50, 880, 200, 300 } );
+	CHECK( nativeToLogical( Rect{ 470, 100, 200, 300 }, logical, Transform::Rotate90 ) ==
+		damage );
+	CHECK( nativeToLogical( Rect{ 50, 880, 200, 300 }, logical, Transform::Rotate270 ) ==
+		damage );
 	CHECK( !logicalToNative( Rect{ 1200, 700, 100, 30 }, logical, Transform::Rotate90 ) );
+	CHECK( !nativeToLogical( Rect{ 700, 1200, 30, 100 }, logical, Transform::Rotate270 ) );
 
 	const Point cursor = { 123, 45 };
 	CHECK( logicalToNative( cursor, logical, Transform::Rotate90 ) == Point{ 674, 123 } );

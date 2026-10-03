@@ -11,6 +11,12 @@ The existing direct-client-scanout path is outside this fallback. A frame which
 passes `drm_prepare` without composition continues to commit the client's
 buffers directly and creates neither a composition dispatch nor a staging copy.
 
+For a portrait mode whose KMS primary plane has no rotation property, the
+extension in [portrait-output-rotation.md](portrait-output-rotation.md) inserts
+a logical-to-native compute transform before this document's staging copy. Its
+native direct-client exception and capture-coordinate contract supersede the
+same-size statements below only while that transform is active.
+
 ## Output modes
 
 Output allocation selects one mode per output format:
@@ -57,6 +63,11 @@ format, layer count, and sample count. They never alias memory. Partial-overlay
 slots follow the same rule; the existing cross-image memory reuse optimization
 is used only by combined mode.
 
+With final-output rotation active, the logical optimal composition image is
+instead paired with a separate native-oriented optimal image. The native optimal
+image and linear scanout image have identical swapped extents and are the two
+participants in the staging copy.
+
 Recording a command retains references to every source and destination through
 `CVulkanCmdBuffer`. Submission retains the command buffer until its sequence is
 complete. The DRM presentation path waits for that sequence before calling
@@ -101,6 +112,10 @@ output staging copy is recorded. Same-format capture still uses `copyImage`;
 scaled or converted capture still samples the optimal image. Screenshot calls
 continue to render into their dedicated screenshot texture. Thus capture is
 neither read back from linear memory nor made dependent on KMS ownership.
+
+If final-output rotation is active, capture also precedes the rotation dispatch,
+so screenshots and PipeWire remain in logical landscape coordinates while the
+native optimal and linear images remain presentation-only artifacts.
 
 `vulkan_get_last_output_image` returns the linear member of the last submitted
 slot in staged mode, because that is the image passed to DRM. It returns the
