@@ -113,6 +113,7 @@ src = [
   'wlserver.cpp',
   'vblankmanager.cpp',
   'rendervulkan.cpp',
+  'output_staging.cpp',
   'log.cpp',
   'ime.cpp',
   'mangoapp.cpp',
