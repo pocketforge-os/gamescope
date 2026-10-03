@@ -699,13 +699,15 @@ static bool get_plane_formats( struct drm_t *drm, gamescope::CDRMPlane *pPlane, 
 
 static uint32_t pick_plane_format( const struct wlr_drm_format_set *formats, uint32_t Xformat, uint32_t Aformat )
 {
-	const VkFormatFeatureFlags neededFeatures = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
 	uint32_t result = DRM_FORMAT_INVALID;
 	for ( size_t i = 0; i < formats->len; i++ ) {
-		uint32_t fmt = formats->formats[i].format;
+		const wlr_drm_format &planeFormat = formats->formats[i];
+		uint32_t fmt = planeFormat.format;
 
-		// Skip formats that we cannot use with the Vulkan device
-		if ( !vulkan_has_drm_modifiers_for_features( DRMFormatToVulkan(fmt, false), neededFeatures ) )
+		// Require one exact KMS/Vulkan modifier intersection, including either the
+		// combined compute usage or the same-format linear staging fallback.
+		if ( !vulkan_supports_output_format( fmt,
+			std::span<const uint64_t>{ planeFormat.modifiers, planeFormat.len } ) )
 			continue;
 
 		if ( fmt == Xformat ) {
@@ -3649,6 +3651,10 @@ namespace gamescope
 				m_bWasCompositing = false;
 				if ( pFrameInfo->layerCount == 2 )
 					m_nLastSingleOverlayZPos = pFrameInfo->layers[1].zpos;
+				const VulkanOutputCounters counters = vulkan_get_output_counters();
+				drm_log.debugf( "output path=direct composition_dispatches=%llu staging_copies=%llu",
+					static_cast<unsigned long long>( counters.compositionDispatches ),
+					static_cast<unsigned long long>( counters.stagingCopies ) );
 
 				return Commit( pFrameInfo );
 			}
@@ -3730,6 +3736,10 @@ namespace gamescope
 				xwm_log.errorf("vulkan_composite failed");
 				return -EINVAL;
 			}
+			const VulkanOutputCounters counters = vulkan_get_output_counters();
+			drm_log.debugf( "output path=composited composition_dispatches=%llu staging_copies=%llu",
+				static_cast<unsigned long long>( counters.compositionDispatches ),
+				static_cast<unsigned long long>( counters.stagingCopies ) );
 
 			vulkan_wait( *oCompositeResult, true );
 
@@ -3910,6 +3920,15 @@ namespace gamescope
 				return std::span<const uint64_t>{};
 
 			return std::span<const uint64_t>{ pFormat->modifiers, pFormat->modifiers + pFormat->len };
+		}
+		virtual std::span<const uint64_t> GetOutputModifiers( uint32_t uDrmFormat, bool bPartial ) const override
+		{
+			const wlr_drm_format_set *pFormats = bPartial ? &g_DRM.formats : &g_DRM.primary_formats;
+			const wlr_drm_format *pFormat = wlr_drm_format_set_get( pFormats, uDrmFormat );
+			if ( !pFormat )
+				return {};
+
+			return { pFormat->modifiers, pFormat->modifiers + pFormat->len };
 		}
 
 		virtual IBackendConnector *GetCurrentConnector() override
@@ -4159,4 +4178,3 @@ int HackyDRMPresent( const FrameInfo_t *pFrameInfo, bool bAsync )
 {
 	return static_cast<gamescope::CDRMBackend *>( GetBackend() )->Present( pFrameInfo, bAsync );
 }
-

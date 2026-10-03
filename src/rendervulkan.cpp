@@ -120,6 +120,16 @@ static VkResult vulkan_load_module()
 }
 
 VulkanOutput_t g_output;
+static std::atomic<uint64_t> s_compositionDispatches = 0;
+static std::atomic<uint64_t> s_stagingCopies = 0;
+
+VulkanOutputCounters vulkan_get_output_counters()
+{
+	return {
+		.compositionDispatches = s_compositionDispatches.load( std::memory_order_relaxed ),
+		.stagingCopies = s_stagingCopies.load( std::memory_order_relaxed ),
+	};
+}
 
 uint32_t g_uCompositeDebug = 0u;
 gamescope::ConVar<uint32_t> cv_composite_debug{ "composite_debug", 0, "Debug composition flags" };
@@ -1914,6 +1924,8 @@ void CVulkanCmdBuffer::prepareDestImage(CVulkanTexture *image)
 	if (!result.second)
 		return;
 	result.first->second.discarded = true;
+	result.first->second.needsImport = image->externalImage() &&
+		( image->importedImage() || image->queueFamily != VK_QUEUE_FAMILY_IGNORED );
 	result.first->second.needsExport = image->externalImage();
 	result.first->second.needsPresentLayout = image->outputImage();
 }
@@ -2059,6 +2071,123 @@ static VkResult getModifierProps( const VkImageCreateInfo *imageInfo, uint64_t m
 	return g_device.vk.GetPhysicalDeviceImageFormatProperties2(g_device.physDev(), &imageFormatInfo, &imageProps);
 }
 
+static gamescope::output_staging::FeatureFlags outputFeatureFlags( VkFormatFeatureFlags features )
+{
+	using namespace gamescope::output_staging;
+	FeatureFlags result = 0;
+	if ( features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT )
+		result |= FeatureSampled;
+	if ( features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT )
+		result |= FeatureStorage;
+	if ( features & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT )
+		result |= FeatureTransferSrc;
+	if ( features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT )
+		result |= FeatureTransferDst;
+	return result;
+}
+
+static bool modifierSupportsExportableUsage( uint32_t drmFormat, uint64_t modifier, VkImageUsageFlags usage )
+{
+	std::array<VkFormat, 2> formats = {
+		DRMFormatToVulkan( drmFormat, false ),
+		DRMFormatToVulkan( drmFormat, true ),
+	};
+	VkImageFormatListCreateInfo formatList = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+		.viewFormatCount = uint32_t( formats.size() ),
+		.pViewFormats = formats.data(),
+	};
+	VkImageCreateInfo imageInfo = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = formats[0],
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+		.usage = usage,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+	};
+	if ( formats[0] != formats[1] )
+	{
+		imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+		imageInfo.pNext = &formatList;
+	}
+
+	VkExternalImageFormatProperties externalFormatProps = {
+		.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
+	};
+	const VkResult result = getModifierProps( &imageInfo, modifier, &externalFormatProps );
+	return result == VK_SUCCESS &&
+		( externalFormatProps.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT );
+}
+
+static gamescope::output_staging::OutputPlan makeOutputPlan(
+	uint32_t drmFormat,
+	std::span<const uint64_t> kmsModifiers,
+	bool allowCombined = true )
+{
+	using namespace gamescope::output_staging;
+	if ( !g_device.supportsModifiers() )
+		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoKmsFormat };
+
+	const VkFormat vkFormat = DRMFormatToVulkan( drmFormat, false );
+	if ( vkFormat == VK_FORMAT_UNDEFINED )
+		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoKmsFormat };
+
+	VkDrmFormatModifierPropertiesListEXT modifierList = {
+		.sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
+	};
+	VkFormatProperties2 formatProps = {
+		.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+		.pNext = &modifierList,
+	};
+	g_device.vk.GetPhysicalDeviceFormatProperties2( g_device.physDev(), vkFormat, &formatProps );
+
+	std::vector<VkDrmFormatModifierPropertiesEXT> modifierProps( modifierList.drmFormatModifierCount );
+	modifierList.pDrmFormatModifierProperties = modifierProps.data();
+	g_device.vk.GetPhysicalDeviceFormatProperties2( g_device.physDev(), vkFormat, &formatProps );
+
+	std::vector<KmsModifier> kms;
+	kms.reserve( kmsModifiers.size() );
+	for ( uint64_t modifier : kmsModifiers )
+		kms.push_back( { drmFormat, modifier } );
+
+	std::vector<VulkanModifier> vulkan;
+	vulkan.reserve( modifierProps.size() );
+	for ( const VkDrmFormatModifierPropertiesEXT &props : modifierProps )
+	{
+		const FeatureFlags features = outputFeatureFlags( props.drmFormatModifierTilingFeatures );
+		const bool combinedExportable = allowCombined && modifierSupportsExportableUsage(
+			drmFormat,
+			props.drmFormatModifier,
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT );
+		const bool transferDstExportable = modifierSupportsExportableUsage(
+			drmFormat,
+			props.drmFormatModifier,
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT );
+		vulkan.push_back( {
+			drmFormat,
+			props.drmFormatModifier,
+			features,
+			combinedExportable,
+			transferDstExportable,
+		} );
+	}
+
+	return chooseOutputPlan( {
+		.format = drmFormat,
+		.optimalFeatures = outputFeatureFlags( formatProps.formatProperties.optimalTilingFeatures ),
+		.kmsModifiers = kms,
+		.vulkanModifiers = vulkan,
+	} );
+}
+
+bool vulkan_supports_output_format( uint32_t drmFormat, std::span<const uint64_t> kmsModifiers )
+{
+	return makeOutputPlan( drmFormat, kmsModifiers ).mode != gamescope::output_staging::OutputMode::Unsupported;
+}
+
 static VkImageViewType VulkanImageTypeToViewType(VkImageType type)
 {
 	switch (type)
@@ -2070,7 +2199,7 @@ static VkImageViewType VulkanImageTypeToViewType(VkImageType type)
 	}
 }
 
-bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uint32_t drmFormat, createFlags flags, wlr_dmabuf_attributes *pDMA /* = nullptr */,  uint32_t contentWidth /* = 0 */, uint32_t contentHeight /* =  0 */, CVulkanTexture *pExistingImageToReuseMemory, gamescope::OwningRc<gamescope::IBackendFb> pBackendFb )
+bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uint32_t drmFormat, createFlags flags, wlr_dmabuf_attributes *pDMA /* = nullptr */,  uint32_t contentWidth /* = 0 */, uint32_t contentHeight /* =  0 */, CVulkanTexture *pExistingImageToReuseMemory, gamescope::OwningRc<gamescope::IBackendFb> pBackendFb, std::span<const uint64_t> allowedModifiers )
 {
 	m_pBackendFb = std::move( pBackendFb );
 	m_drmFormat = drmFormat;
@@ -2125,6 +2254,7 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 	}
 
 	m_bExternal = pDMA || flags.bExportable == true;
+	m_bImported = pDMA != nullptr;
 
 	// Possible extensions for below
 	wsi_image_create_info wsiImageCreateInfo = {};
@@ -2215,25 +2345,27 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 
 		uint64_t linear = DRM_FORMAT_MOD_LINEAR;
 
-		const uint64_t *possibleModifiers;
-		size_t numPossibleModifiers;
-		if ( flags.bLinear )
+		std::span<const uint64_t> possibleModifiers;
+		if ( !allowedModifiers.empty() )
 		{
-			possibleModifiers = &linear;
-			numPossibleModifiers = 1;
+			possibleModifiers = allowedModifiers;
+		}
+		else if ( flags.bLinear )
+		{
+			possibleModifiers = { &linear, 1 };
 		}
 		else
 		{
-			std::span<const uint64_t> modifiers = GetBackend()->GetSupportedModifiers( drmFormat );
-			assert( !modifiers.empty() );
-			possibleModifiers = modifiers.data();
-			numPossibleModifiers = modifiers.size();
+			possibleModifiers = GetBackend()->GetSupportedModifiers( drmFormat );
+		}
+		if ( possibleModifiers.empty() )
+		{
+			vk_log.errorf( "no KMS modifiers available for output format 0x%x", drmFormat );
+			return false;
 		}
 
-		for ( size_t i = 0; i < numPossibleModifiers; i++ )
+		for ( uint64_t modifier : possibleModifiers )
 		{
-			uint64_t modifier = possibleModifiers[i];
-
 			VkExternalImageFormatProperties externalFormatProps = {
 				.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
 			};
@@ -2251,7 +2383,11 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 			modifiers.push_back( modifier );
 		}
 
-		assert( modifiers.size() > 0 );
+		if ( modifiers.empty() )
+		{
+			vk_log.errorf( "no exportable Vulkan modifier supports output format 0x%x and usage 0x%x", drmFormat, usage );
+			return false;
+		}
 
 		modifierListInfo = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
@@ -2541,6 +2677,11 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 	if ( flags.bFlippable == true )
 	{
 		m_pBackendFb = GetBackend()->ImportDmabufToBackend( &m_dmabuf );
+		if ( !m_pBackendFb )
+		{
+			vk_log.errorf( "failed to import output dma-buf as a backend framebuffer" );
+			return false;
+		}
 	}
 
 	bool bHasAlpha = pDMA ? DRMFormatHasAlpha( pDMA->format ) : true;
@@ -3331,83 +3472,138 @@ bool vulkan_remake_swapchain( void )
 	return bRet;
 }
 
+struct OutputRingCandidate
+{
+	std::vector<gamescope::OwningRc<CVulkanTexture>> presentImages;
+	std::vector<gamescope::OwningRc<CVulkanTexture>> compositionImages;
+	gamescope::output_staging::OutputMode mode = gamescope::output_staging::OutputMode::Unsupported;
+	uint64_t modifier = gamescope::output_staging::InvalidModifier;
+};
+
+static const char *outputPlanRejectionName( gamescope::output_staging::Rejection rejection )
+{
+	using gamescope::output_staging::Rejection;
+	switch ( rejection )
+	{
+		case Rejection::Accepted: return "none";
+		case Rejection::NoKmsFormat: return "no KMS format/modifier";
+		case Rejection::NoOptimalComposition: return "no optimal composition usage";
+		case Rejection::NoKmsLinearModifier: return "no KMS linear modifier";
+		case Rejection::NoExportableLinearTransferDst: return "no exportable linear transfer destination";
+	}
+	return "unknown";
+}
+
+static bool allocateOutputRingForPlan(
+	uint32_t drmFormat,
+	const gamescope::output_staging::OutputPlan &plan,
+	const OutputRingCandidate *pReuse,
+	OutputRingCandidate *pCandidate )
+{
+	using gamescope::output_staging::OutputMode;
+	*pCandidate = {};
+	pCandidate->mode = plan.mode;
+	pCandidate->modifier = plan.modifier;
+	pCandidate->presentImages.resize( 3 );
+	const std::array<uint64_t, 1> allowedModifiers = { plan.modifier };
+
+	CVulkanTexture::createFlags outputFlags;
+	outputFlags.bFlippable = true;
+	outputFlags.bOutputImage = true;
+	if ( plan.mode == OutputMode::Combined )
+	{
+		outputFlags.bStorage = true;
+		outputFlags.bTransferSrc = true;
+		outputFlags.bSampled = true;
+		for ( uint32_t i = 0; i < pCandidate->presentImages.size(); i++ )
+		{
+			CVulkanTexture *pReuseImage = pReuse && pReuse->mode == OutputMode::Combined &&
+				pReuse->modifier == plan.modifier ? pReuse->presentImages[i].get() : nullptr;
+			pCandidate->presentImages[i] = new CVulkanTexture();
+			if ( !pCandidate->presentImages[i]->BInit(
+				g_nOutputWidth, g_nOutputHeight, 1u, drmFormat, outputFlags,
+				nullptr, 0, 0, pReuseImage, nullptr, allowedModifiers ) )
+				return false;
+		}
+		return true;
+	}
+
+	if ( plan.mode != OutputMode::Staged )
+		return false;
+
+	CVulkanTexture::createFlags compositionFlags;
+	compositionFlags.bStorage = true;
+	compositionFlags.bTransferSrc = true;
+	compositionFlags.bSampled = true;
+	outputFlags.bTransferDst = true;
+	outputFlags.bLinear = true;
+	pCandidate->compositionImages.resize( 3 );
+	for ( uint32_t i = 0; i < pCandidate->presentImages.size(); i++ )
+	{
+		pCandidate->compositionImages[i] = new CVulkanTexture();
+		if ( !pCandidate->compositionImages[i]->BInit(
+			g_nOutputWidth, g_nOutputHeight, 1u, drmFormat, compositionFlags ) )
+			return false;
+
+		pCandidate->presentImages[i] = new CVulkanTexture();
+		if ( !pCandidate->presentImages[i]->BInit(
+			g_nOutputWidth, g_nOutputHeight, 1u, drmFormat, outputFlags,
+			nullptr, 0, 0, nullptr, nullptr, allowedModifiers ) )
+			return false;
+	}
+	return true;
+}
+
+static bool allocateOutputRing(
+	uint32_t drmFormat,
+	bool partial,
+	const OutputRingCandidate *pReuse,
+	OutputRingCandidate *pCandidate )
+{
+	using gamescope::output_staging::OutputMode;
+	const std::span<const uint64_t> kmsModifiers = GetBackend()->GetOutputModifiers( drmFormat, partial );
+	gamescope::output_staging::OutputPlan plan = makeOutputPlan( drmFormat, kmsModifiers );
+	if ( plan.mode == OutputMode::Unsupported )
+	{
+		vk_log.errorf( "output format 0x%x is unsupported: %s", drmFormat, outputPlanRejectionName( plan.rejection ) );
+		return false;
+	}
+
+	if ( allocateOutputRingForPlan( drmFormat, plan, pReuse, pCandidate ) )
+		return true;
+
+	if ( plan.mode == OutputMode::Combined )
+	{
+		vk_log.infof( "combined output allocation for format 0x%x failed; checking linear staging", drmFormat );
+		plan = makeOutputPlan( drmFormat, kmsModifiers, false );
+		if ( plan.mode == OutputMode::Staged && allocateOutputRingForPlan( drmFormat, plan, nullptr, pCandidate ) )
+			return true;
+	}
+
+	vk_log.errorf( "failed to allocate complete output ring for format 0x%x: %s", drmFormat, outputPlanRejectionName( plan.rejection ) );
+	return false;
+}
+
 static bool vulkan_make_output_images( VulkanOutput_t *pOutput )
 {
-	CVulkanTexture::createFlags outputImageflags;
-	outputImageflags.bFlippable = true;
-	outputImageflags.bStorage = true;
-	outputImageflags.bTransferSrc = true; // for screenshots
-	outputImageflags.bSampled = true; // for pipewire blits
-	outputImageflags.bOutputImage = true;
-
-	pOutput->outputImages.resize(3); // extra image for partial composition.
-	pOutput->outputImagesPartialOverlay.resize(3);
-
-	pOutput->outputImages[0] = nullptr;
-	pOutput->outputImages[1] = nullptr;
-	pOutput->outputImages[2] = nullptr;
-	pOutput->outputImagesPartialOverlay[0] = nullptr;
-	pOutput->outputImagesPartialOverlay[1] = nullptr;
-	pOutput->outputImagesPartialOverlay[2] = nullptr;
-
-	uint32_t uDRMFormat = pOutput->uOutputFormat;
-
-	pOutput->outputImages[0] = new CVulkanTexture();
-	bool bSuccess = pOutput->outputImages[0]->BInit( g_nOutputWidth, g_nOutputHeight, 1u, uDRMFormat, outputImageflags );
-	if ( bSuccess != true )
-	{
-		vk_log.errorf( "failed to allocate buffer for KMS" );
+	OutputRingCandidate primary;
+	if ( !allocateOutputRing( pOutput->uOutputFormat, false, nullptr, &primary ) )
 		return false;
-	}
 
-	pOutput->outputImages[1] = new CVulkanTexture();
-	bSuccess = pOutput->outputImages[1]->BInit( g_nOutputWidth, g_nOutputHeight, 1u, uDRMFormat, outputImageflags );
-	if ( bSuccess != true )
-	{
-		vk_log.errorf( "failed to allocate buffer for KMS" );
+	OutputRingCandidate partial;
+	if ( pOutput->uOutputFormatOverlay != VK_FORMAT_UNDEFINED && !kDisablePartialComposition &&
+		!allocateOutputRing( pOutput->uOutputFormatOverlay, true, &primary, &partial ) )
 		return false;
-	}
 
-	pOutput->outputImages[2] = new CVulkanTexture();
-	bSuccess = pOutput->outputImages[2]->BInit( g_nOutputWidth, g_nOutputHeight, 1u, uDRMFormat, outputImageflags );
-	if ( bSuccess != true )
-	{
-		vk_log.errorf( "failed to allocate buffer for KMS" );
-		return false;
-	}
+	pOutput->outputImages = std::move( primary.presentImages );
+	pOutput->outputCompositionImages = std::move( primary.compositionImages );
+	pOutput->outputMode = primary.mode;
+	pOutput->outputImagesPartialOverlay = std::move( partial.presentImages );
+	pOutput->outputCompositionImagesPartialOverlay = std::move( partial.compositionImages );
+	pOutput->outputModePartialOverlay = partial.mode;
 
 	// Oh no.
 	pOutput->temporaryHackyBlankImage = vulkan_create_debug_blank_texture();
-
-	if ( pOutput->uOutputFormatOverlay != VK_FORMAT_UNDEFINED && !kDisablePartialComposition )
-	{
-		uint32_t uPartialDRMFormat = pOutput->uOutputFormatOverlay;
-
-		pOutput->outputImagesPartialOverlay[0] = new CVulkanTexture();
-		bool bSuccess = pOutput->outputImagesPartialOverlay[0]->BInit( g_nOutputWidth, g_nOutputHeight, 1u, uPartialDRMFormat, outputImageflags, nullptr, 0, 0, pOutput->outputImages[0].get() );
-		if ( bSuccess != true )
-		{
-			vk_log.errorf( "failed to allocate buffer for KMS" );
-			return false;
-		}
-
-		pOutput->outputImagesPartialOverlay[1] = new CVulkanTexture();
-		bSuccess = pOutput->outputImagesPartialOverlay[1]->BInit( g_nOutputWidth, g_nOutputHeight, 1u, uPartialDRMFormat, outputImageflags, nullptr, 0, 0, pOutput->outputImages[1].get() );
-		if ( bSuccess != true )
-		{
-			vk_log.errorf( "failed to allocate buffer for KMS" );
-			return false;
-		}
-
-		pOutput->outputImagesPartialOverlay[2] = new CVulkanTexture();
-		bSuccess = pOutput->outputImagesPartialOverlay[2]->BInit( g_nOutputWidth, g_nOutputHeight, 1u, uPartialDRMFormat, outputImageflags, nullptr, 0, 0, pOutput->outputImages[2].get() );
-		if ( bSuccess != true )
-		{
-			vk_log.errorf( "failed to allocate buffer for KMS" );
-			return false;
-		}
-	}
-
 	return true;
 }
 
@@ -3425,7 +3621,6 @@ bool vulkan_remake_output_images()
 		pCaptureTexture = nullptr;
 
 	bool bRet = vulkan_make_output_images( pOutput );
-	assert( bRet );
 	return bRet;
 }
 
@@ -4098,8 +4293,16 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	}
 
 	gamescope::Rc<CVulkanTexture> compositeImage;
+	const bool outputComposition = !GetBackend()->UsesVulkanSwapchain() && pOutputOverride == nullptr;
+	const gamescope::output_staging::OutputMode outputMode = partial
+		? g_output.outputModePartialOverlay
+		: g_output.outputMode;
 	if ( pOutputOverride )
 		compositeImage = pOutputOverride;
+	else if ( outputComposition && outputMode == gamescope::output_staging::OutputMode::Staged )
+		compositeImage = partial
+			? g_output.outputCompositionImagesPartialOverlay[ g_output.nOutImage ]
+			: g_output.outputCompositionImages[ g_output.nOutImage ];
 	else
 		compositeImage = partial ? g_output.outputImagesPartialOverlay[ g_output.nOutImage ] : g_output.outputImages[ g_output.nOutImage ];
 
@@ -4284,7 +4487,23 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 		}
 	}
 
+	bool stagedCopy = false;
+	if ( outputComposition && outputMode == gamescope::output_staging::OutputMode::Staged )
+	{
+		gamescope::Rc<CVulkanTexture> scanoutImage = partial
+			? g_output.outputImagesPartialOverlay[ g_output.nOutImage ]
+			: g_output.outputImages[ g_output.nOutImage ];
+		cmdBuffer->copyImage( compositeImage, scanoutImage );
+		stagedCopy = true;
+	}
+
 	uint64_t sequence = g_device.submit(std::move(cmdBuffer));
+	if ( outputComposition )
+	{
+		s_compositionDispatches.fetch_add( 1, std::memory_order_relaxed );
+		if ( stagedCopy )
+			s_stagingCopies.fetch_add( 1, std::memory_order_relaxed );
+	}
 
 	if ( !GetBackend()->UsesVulkanSwapchain() && pOutputOverride == nullptr && increment )
 	{
