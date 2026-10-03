@@ -1,6 +1,21 @@
 catch2_dep = dependency('catch2-with-main', required: true)
 
 srcdir = '../src'
+
+test_output_staging = executable(
+	'test_output_staging',
+	[srcdir / 'output_staging.cpp', 'test_output_staging.cpp'],
+	include_directories: [srcdir],
+)
+test('output-staging', test_output_staging)
+
+test_output_staging_vulkan = executable(
+	'test_output_staging_vulkan',
+	'test_output_staging_vulkan.cpp',
+	dependencies: [vulkan_dep],
+)
+test('output-staging-vulkan', test_output_staging_vulkan)
+
 unittest_src = []
 foreach src : gamescope_core_src + ['Script/Script.cpp', 'convar_script.cpp']
 	unittest_src += srcdir / src
