@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [pocketforge]
   pull_request:
-    branches: [master]
+    branches: [pocketforge]
   workflow_dispatch:
 
 permissions:
