@@ -65,19 +65,27 @@ gitlink is visible. The pins and admission decisions are:
 
 ## Patch and branch policy
 
-1. `master` is protected integration history. Changes use a focused topic
-   branch and pull request; direct pushes and force pushes are prohibited.
-2. PocketForge patches are separate commits after the audited base. A source
+1. `pocketforge` is the protected default and PocketForge integration branch.
+   Its bootstrap ref was created directly at the unchanged audited commit
+   `5fb8dce4a09d0a68d097b9faf9513782106bc843`, before any content change, so
+   the first governance change can itself remain reviewable. Changes use a
+   focused topic branch and pull request; direct pushes and force pushes are
+   prohibited.
+2. `master` preserves the later upstream history that existed when the fork
+   was bootstrapped (then at
+   `0e590c755e79c23607378495d10ceb4308b01a59`). It was neither rewritten nor
+   deleted and is not the PocketForge pull-request base.
+3. PocketForge patches are separate commits after the audited base. A source
    behavior patch must not be hidden in a provenance, packaging, or CI-only
    change.
-3. Upstream synchronization is an explicit reviewed merge. The pull request
-   updates the audited commit/tree, gitlink and wrap pins, licence inventory,
-   and build evidence together.
-4. Submodules and wraps never follow a mutable branch or tag. An unmodified
+4. Upstream synchronization is an explicit reviewed merge into `pocketforge`.
+   The pull request updates the audited commit/tree, gitlink and wrap pins,
+   licence inventory, and build evidence together.
+5. Submodules and wraps never follow a mutable branch or tag. An unmodified
    dependency keeps its authoritative upstream URL. A patched dependency uses
    a controlled PocketForge fork and immutable gitlink until the patch is
    upstream and the fork can be retired by a reviewed provenance change.
-5. Release inputs are committed source or immutable, checksum-verified source
+6. Release inputs are committed source or immutable, checksum-verified source
    archives. Binary vendor substitutions are not accepted.
 
 ## CI and release boundary

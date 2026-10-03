@@ -9,11 +9,14 @@ PocketForge patch line starts from audited upstream commit
 upstream history. See [PROVENANCE.md](PROVENANCE.md) for the exact source and
 dependency pins, build and licence decisions, and patch-branch policy.
 
-Changes land on focused topic branches through pull requests. Direct pushes to
-`master` and mutable submodule branch pins are not permitted. An upstream
-dependency stays at its upstream URL while unmodified; a PocketForge change to
-a dependency requires a controlled fork, an immutable gitlink, preserved
-licence material, and a provenance update in the same pull request.
+`pocketforge` is the protected default and pull-request base. It was created at
+the unchanged audited commit above; `master` remains the preserved upstream
+tracking line and is not a PocketForge integration base. Changes land on
+focused topic branches through pull requests. Direct pushes to `pocketforge`
+and mutable submodule branch pins are not permitted. An upstream dependency
+stays at its upstream URL while unmodified; a PocketForge change to a
+dependency requires a controlled fork, an immutable gitlink, preserved licence
+material, and a provenance update in the same pull request.
 
 In an embedded session usecase, gamescope does the same thing as steamcompmgr, but with less extra copies and latency:
 
