@@ -18,6 +18,10 @@ stays at its upstream URL while unmodified; a PocketForge change to a
 dependency requires a controlled fork, an immutable gitlink, preserved licence
 material, and a provenance update in the same pull request.
 
+CI primes the exact archives in [`.github/meson-sources.lock`](.github/meson-sources.lock),
+verifies their source and licence hashes, and configures Meson with downloads
+disabled. See `PROVENANCE.md` for the cold/warm cache and fail-closed policy.
+
 In an embedded session usecase, gamescope does the same thing as steamcompmgr, but with less extra copies and latency:
 
  - It's getting game frames through Wayland by way of Xwayland, so there's no copy within X itself before it gets the frame.

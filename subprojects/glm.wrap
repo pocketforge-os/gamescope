@@ -1,8 +1,7 @@
-[wrap-git]
-directory = glm
-
-url = https://github.com/g-truc/glm.git
-revision = 0af55ccecd98d4e5a8d1fad7de25ba429d60e863
-depth = 1
+[wrap-file]
+directory = glm-0af55ccecd98d4e5a8d1fad7de25ba429d60e863
+source_url = https://github.com/g-truc/glm/archive/0af55ccecd98d4e5a8d1fad7de25ba429d60e863.tar.gz
+source_filename = glm-0af55ccecd98d4e5a8d1fad7de25ba429d60e863.tar.gz
+source_hash = e7f187d83523f505eb38dd25d297ea6c0d4ed856d733e808f18253f5a8fa88a0
 
 patch_directory = glm

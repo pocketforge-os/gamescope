@@ -26,7 +26,7 @@ jobs:
         run: |
           pacman-key --init
           pacman -Syu --noconfirm
-          pacman -S --noconfirm git meson glslang libcap sdl2 vulkan-headers \
+          pacman -S --noconfirm ca-certificates curl git meson glslang libcap sdl2 vulkan-headers \
             libx11 libxmu libxcomposite libxrender libxres libxtst \
             libxkbcommon libdrm libinput wayland-protocols benchmark \
             xorg-xwayland pipewire cmake libavif libheif aom rav1e \
@@ -48,12 +48,47 @@ jobs:
             exit 1
           fi
 
+      - name: Prime and verify immutable Meson sources
+        shell: bash
+        env:
+          MESON_SOURCE_CACHE_ROOT: ${{ runner.temp }}/gamescope-meson-source-cache/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}
+        run: |
+          set -euo pipefail
+          cold_result="$(.github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$cold_result"
+          grep -Fx 'cache_result=cold' <<<"$cold_result"
+
+          warm_result="$(PF_MESON_CACHE_OFFLINE=1 .github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$warm_result"
+          grep -Fx 'cache_result=warm' <<<"$warm_result"
+
+          if PF_MESON_CACHE_OFFLINE=1 \
+            MESON_SOURCE_CACHE_ROOT="${MESON_SOURCE_CACHE_ROOT}-missing" \
+            .github/scripts/prime-meson-sources.sh; then
+            echo 'an incomplete offline cache was accepted' >&2
+            exit 1
+          fi
+
+          manifest_key="$(sha256sum .github/meson-sources.lock | awk '{print $1}')"
+          corrupt_root="${MESON_SOURCE_CACHE_ROOT}-corrupt"
+          install -d "$corrupt_root/$manifest_key"
+          cp -a "$MESON_SOURCE_CACHE_ROOT/$manifest_key/." "$corrupt_root/$manifest_key/"
+          corrupt_archive="$(awk -F '\t' '$1 == "glm" { print $4 }' .github/meson-sources.lock)"
+          printf 'corrupt\n' > "$corrupt_root/$manifest_key/$corrupt_archive"
+          if PF_MESON_CACHE_OFFLINE=1 \
+            MESON_SOURCE_CACHE_ROOT="$corrupt_root" \
+            .github/scripts/prime-meson-sources.sh; then
+            echo 'a hash-mismatched offline cache was accepted' >&2
+            exit 1
+          fi
+
       - name: Build and run native tests
         shell: bash
         run: |
           set -euo pipefail
           export CC=gcc CXX=g++
           meson setup build-native \
+            --wrap-mode=nodownload \
             -Dinput_emulation=disabled \
             -Denable_openvr_support=false \
             --force-fallback-for=libdisplay-info,libliftoff,vkroots,wlroots \
@@ -76,7 +111,7 @@ jobs:
           dpkg --add-architecture arm64
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates git file meson ninja-build cmake pkg-config \
+            ca-certificates curl git file meson ninja-build cmake pkg-config \
             crossbuild-essential-arm64 glslang-tools wayland-protocols \
             libwayland-bin xwayland \
             libx11-dev:arm64 libxdamage-dev:arm64 libxcomposite-dev:arm64 \
@@ -105,6 +140,40 @@ jobs:
           printf '%s\n' "$state"
           if grep -Eq '^[+-U]' <<<"$state"; then
             echo 'submodule checkout does not match the recorded gitlinks' >&2
+            exit 1
+          fi
+
+      - name: Prime and verify immutable Meson sources
+        shell: bash
+        env:
+          MESON_SOURCE_CACHE_ROOT: ${{ runner.temp }}/gamescope-meson-source-cache/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}
+        run: |
+          set -euo pipefail
+          cold_result="$(.github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$cold_result"
+          grep -Fx 'cache_result=cold' <<<"$cold_result"
+
+          warm_result="$(PF_MESON_CACHE_OFFLINE=1 .github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$warm_result"
+          grep -Fx 'cache_result=warm' <<<"$warm_result"
+
+          if PF_MESON_CACHE_OFFLINE=1 \
+            MESON_SOURCE_CACHE_ROOT="${MESON_SOURCE_CACHE_ROOT}-missing" \
+            .github/scripts/prime-meson-sources.sh; then
+            echo 'an incomplete offline cache was accepted' >&2
+            exit 1
+          fi
+
+          manifest_key="$(sha256sum .github/meson-sources.lock | awk '{print $1}')"
+          corrupt_root="${MESON_SOURCE_CACHE_ROOT}-corrupt"
+          install -d "$corrupt_root/$manifest_key"
+          cp -a "$MESON_SOURCE_CACHE_ROOT/$manifest_key/." "$corrupt_root/$manifest_key/"
+          corrupt_archive="$(awk -F '\t' '$1 == "glm" { print $4 }' .github/meson-sources.lock)"
+          printf 'corrupt\n' > "$corrupt_root/$manifest_key/$corrupt_archive"
+          if PF_MESON_CACHE_OFFLINE=1 \
+            MESON_SOURCE_CACHE_ROOT="$corrupt_root" \
+            .github/scripts/prime-meson-sources.sh; then
+            echo 'a hash-mismatched offline cache was accepted' >&2
             exit 1
           fi
 
@@ -138,6 +207,7 @@ jobs:
             > aarch64.ini
           meson setup build-aarch64 \
             --cross-file aarch64.ini \
+            --wrap-mode=nodownload \
             -Dpipewire=disabled \
             -Drt_cap=disabled \
             -Ddrm_backend=enabled \
