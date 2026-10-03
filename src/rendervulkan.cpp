@@ -3963,6 +3963,29 @@ float g_flInternalDisplayBrightnessNits = 500.0f;
 float g_flHDRItmSdrNits = 100.f;
 float g_flHDRItmTargetNits = 1000.f;
 
+static uint32_t client_buffer_transform_code( const FrameInfo_t::Layer_t &layer )
+{
+	using namespace gamescope::output_rotation;
+	const ClientTransform transform = layer.clientTransform.clientClass == ClientClass::Xwayland
+		? layer.clientTransform.vulkanPreTransform
+		: layer.clientTransform.waylandBufferTransform;
+	switch ( transform )
+	{
+		case ClientTransform::Rotate90: return 1;
+		case ClientTransform::Rotate270: return 2;
+		default: return 0;
+	}
+}
+
+static uint32_t pack_client_buffer_transforms( const FrameInfo_t *frameInfo,
+	uint32_t firstLayer = 0 )
+{
+	uint32_t result = 0;
+	for ( uint32_t i = firstLayer; i < uint32_t( frameInfo->layerCount ); i++ )
+		result |= client_buffer_transform_code( frameInfo->layers[i] ) << ( ( i - firstLayer ) * 2 );
+	return result;
+}
+
 #pragma pack(push, 1)
 struct BlitPushData_t
 {
@@ -3976,6 +3999,7 @@ struct BlitPushData_t
 
 	uint32_t u_shaderFilter;
 	uint32_t u_alphaMode;
+	uint32_t u_bufferTransform;
 
     float u_linearToNits; // unset
     float u_nitsToLinear; // unset
@@ -3986,6 +4010,7 @@ struct BlitPushData_t
 	{
 		u_shaderFilter = 0;
 		u_alphaMode = 0;
+		u_bufferTransform = pack_client_buffer_transforms( frameInfo );
 
 		for (int i = 0; i < frameInfo->layerCount; i++) {
 			const FrameInfo_t::Layer_t *layer = &frameInfo->layers[i];
@@ -4030,6 +4055,7 @@ struct BlitPushData_t
 		opacity[0] = 1.0f;
         u_shaderFilter = (uint32_t)GamescopeUpscaleFilter::LINEAR;
 		u_alphaMode = 0;
+		u_bufferTransform = 0;
 		ctm[0] = glm::mat3x4
 		{
 			1, 0, 0, 0,
@@ -4123,6 +4149,7 @@ struct RcasPushData_t
 
 	uint32_t u_shaderFilter;
 	uint32_t u_alphaMode;
+	uint32_t u_bufferTransform;
 
     float u_linearToNits; // unset
     float u_nitsToLinear; // unset
@@ -4140,6 +4167,7 @@ struct RcasPushData_t
 		u_c1 = tmp.x;
 		u_shaderFilter = 0;
 		u_alphaMode = 0;
+		u_bufferTransform = pack_client_buffer_transforms( frameInfo, 1 );
 
 		for (int i = 0; i < frameInfo->layerCount; i++)
 		{

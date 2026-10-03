@@ -2,6 +2,7 @@
 
 #include "gamescope_shared.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 
@@ -91,40 +92,119 @@ enum class DirectScanoutRejection
 {
 	Accepted,
 	NoSoftwareRotation,
-	MultipleLayers,
+	UnsupportedLayerCount,
+	UnclassifiedLayer,
 	NotOpaqueBaseLayer,
+	InvalidLogicalRectangle,
+	InvalidLayerOrder,
 	NonNativeExtent,
 	ContentExtentMismatch,
-	ClientTransformNotNormal,
+	ClientTransformNotProven,
+	AmbiguousClientTransform,
 	KmsTransformNotNormal,
 	IncompatibleFormat,
 	AmbiguousModifier,
 	IncompatibleModifier,
 	FramebufferNotImportable,
+	IncompatibleAlpha,
+	IncompatibleBlend,
+	IncompatibleZpos,
+	AmbiguousBufferIdentity,
 };
+
+enum class ClientClass
+{
+	Unknown,
+	Wayland,
+	Xwayland,
+};
+
+// A geometric transform declared by the client for the committed buffer. The
+// value names the physical pre-rotation of logical content; flipped and 180
+// degree declarations are normalized to Unsupported by the protocol adapters.
+enum class ClientTransform
+{
+	Unknown,
+	Normal,
+	Rotate90,
+	Rotate270,
+	Unsupported,
+};
+
+struct ClientTransformMetadata
+{
+	ClientClass clientClass = ClientClass::Unknown;
+	ClientTransform waylandBufferTransform = ClientTransform::Unknown;
+	ClientTransform vulkanPreTransform = ClientTransform::Unknown;
+};
+
+enum class LayerRole
+{
+	Unknown,
+	Base,
+	SystemOverlay,
+	Cursor,
+};
+
+enum class PlaneBlendMode
+{
+	Opaque,
+	Premultiplied,
+	Coverage,
+	Unsupported,
+};
+
+struct DirectScanoutLayerInput
+{
+	uint64_t bufferIdentity = 0;
+	LayerRole role = LayerRole::Unknown;
+	Extent bufferExtent = {};
+	Extent contentExtent = {};
+	Rect logicalRect = {};
+	ClientTransformMetadata client = {};
+	int32_t zpos = 0;
+	float opacity = 0.0f;
+	PlaneBlendMode blendMode = PlaneBlendMode::Unsupported;
+	bool formatCompatible = false;
+	bool explicitModifier = false;
+	bool modifierCompatible = false;
+	bool framebufferImportable = false;
+	bool alphaCompatible = false;
+	bool blendCompatible = false;
+	bool zposCompatible = false;
+};
+
+struct NativePlaneRecord
+{
+	uint64_t bufferIdentity = 0;
+	Rect sourceRect = {};
+	Rect destinationRect = {};
+	int32_t zpos = 0;
+	float opacity = 0.0f;
+	PlaneBlendMode blendMode = PlaneBlendMode::Unsupported;
+	Transform kmsTransform = Transform::Normal;
+
+	bool operator==( const NativePlaneRecord & ) const = default;
+};
+
+constexpr uint32_t MaxNativeDirectLayers = 2;
 
 struct DirectScanoutInput
 {
-	Transform outputTransform;
-	uint32_t layerCount;
-	Extent logicalExtent;
-	Extent bufferExtent;
-	Extent contentExtent;
-	bool baseLayer;
-	bool opaque;
-	bool normalClientTransform;
-	bool normalKmsTransform;
-	bool formatCompatible;
-	bool explicitModifier;
-	bool modifierCompatible;
-	bool framebufferImportable;
+	Transform outputTransform = Transform::Normal;
+	Extent logicalExtent = {};
+	uint32_t layerCount = 0;
+	bool normalKmsTransform = false;
+	std::array<DirectScanoutLayerInput, MaxNativeDirectLayers> layers = {};
 };
 
 struct DirectScanoutDecision
 {
-	bool eligible;
-	DirectScanoutRejection rejection;
-	Transform kmsTransform;
+	bool eligible = false;
+	DirectScanoutRejection rejection = DirectScanoutRejection::NoSoftwareRotation;
+	Transform kmsTransform = Transform::Normal;
+	uint32_t recordCount = 0;
+	std::array<NativePlaneRecord, MaxNativeDirectLayers> records = {};
 };
 
 DirectScanoutDecision directScanoutDecision( const DirectScanoutInput &input );

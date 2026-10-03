@@ -1,5 +1,6 @@
 #include "output_rotation.hpp"
 
+#include <cmath>
 #include <limits>
 
 namespace gamescope::output_rotation
@@ -22,6 +23,60 @@ bool contains( Extent extent, Rect rect )
 {
 	return uint64_t{ rect.x } + rect.width <= extent.width &&
 		uint64_t{ rect.y } + rect.height <= extent.height;
+}
+
+ClientTransform expectedClientTransform( Transform transform )
+{
+	switch ( transform )
+	{
+		case Transform::Rotate90:
+			return ClientTransform::Rotate90;
+		case Transform::Rotate270:
+			return ClientTransform::Rotate270;
+		default:
+			return ClientTransform::Normal;
+	}
+}
+
+enum class ClientTransformProof
+{
+	Proven,
+	NotProven,
+	Ambiguous,
+};
+
+ClientTransformProof proveClientTransform( const ClientTransformMetadata &metadata,
+	Transform outputTransform )
+{
+	const ClientTransform expected = expectedClientTransform( outputTransform );
+	switch ( metadata.clientClass )
+	{
+		case ClientClass::Wayland:
+			if ( metadata.waylandBufferTransform != expected )
+				return ClientTransformProof::NotProven;
+
+			// A native Wayland buffer transform is the proof. A second non-normal
+			// Vulkan declaration would make it impossible to rule out a double
+			// transform, even when both values name the same quarter turn.
+			if ( metadata.vulkanPreTransform != ClientTransform::Unknown &&
+				metadata.vulkanPreTransform != ClientTransform::Normal )
+				return ClientTransformProof::Ambiguous;
+			return ClientTransformProof::Proven;
+
+		case ClientClass::Xwayland:
+			// Xwayland owns the Wayland surface and leaves that path normal. The
+			// commit-snapshotted Gamescope WSI preTransform is the only accepted
+			// proof for this client class.
+			if ( metadata.waylandBufferTransform != ClientTransform::Normal )
+				return ClientTransformProof::Ambiguous;
+			return metadata.vulkanPreTransform == expected
+				? ClientTransformProof::Proven
+				: ClientTransformProof::NotProven;
+
+		case ClientClass::Unknown:
+		default:
+			return ClientTransformProof::NotProven;
+	}
 }
 
 } // namespace
@@ -187,36 +242,112 @@ FrameContract frameContract( Extent logicalExtent, Transform outputTransform )
 DirectScanoutDecision directScanoutDecision( const DirectScanoutInput &input )
 {
 	auto reject = []( DirectScanoutRejection rejection ) {
-		return DirectScanoutDecision{ false, rejection, Transform::Normal };
+		DirectScanoutDecision decision;
+		decision.rejection = rejection;
+		return decision;
 	};
 
 	if ( input.outputTransform != Transform::Rotate90 &&
 		input.outputTransform != Transform::Rotate270 )
 		return reject( DirectScanoutRejection::NoSoftwareRotation );
-	if ( input.layerCount != 1 )
-		return reject( DirectScanoutRejection::MultipleLayers );
-	if ( !input.baseLayer || !input.opaque )
-		return reject( DirectScanoutRejection::NotOpaqueBaseLayer );
-
-	const Extent nativeExtent = transformExtent( input.logicalExtent, input.outputTransform );
-	if ( input.bufferExtent != nativeExtent )
-		return reject( DirectScanoutRejection::NonNativeExtent );
-	if ( input.contentExtent != input.bufferExtent )
-		return reject( DirectScanoutRejection::ContentExtentMismatch );
-	if ( !input.normalClientTransform )
-		return reject( DirectScanoutRejection::ClientTransformNotNormal );
+	if ( input.layerCount == 0 || input.layerCount > MaxNativeDirectLayers )
+		return reject( DirectScanoutRejection::UnsupportedLayerCount );
 	if ( !input.normalKmsTransform )
 		return reject( DirectScanoutRejection::KmsTransformNotNormal );
-	if ( !input.formatCompatible )
-		return reject( DirectScanoutRejection::IncompatibleFormat );
-	if ( !input.explicitModifier )
-		return reject( DirectScanoutRejection::AmbiguousModifier );
-	if ( !input.modifierCompatible )
-		return reject( DirectScanoutRejection::IncompatibleModifier );
-	if ( !input.framebufferImportable )
-		return reject( DirectScanoutRejection::FramebufferNotImportable );
 
-	return { true, DirectScanoutRejection::Accepted, Transform::Normal };
+	DirectScanoutDecision decision;
+	decision.eligible = true;
+	decision.rejection = DirectScanoutRejection::Accepted;
+	decision.kmsTransform = Transform::Normal;
+	decision.recordCount = input.layerCount;
+
+	for ( uint32_t i = 0; i < input.layerCount; i++ )
+	{
+		const DirectScanoutLayerInput &layer = input.layers[i];
+		const bool isBase = i == 0;
+		if ( ( isBase && layer.role != LayerRole::Base ) ||
+			( !isBase && layer.role != LayerRole::SystemOverlay ) )
+			return reject( DirectScanoutRejection::UnclassifiedLayer );
+
+		if ( layer.bufferIdentity == 0 )
+			return reject( DirectScanoutRejection::AmbiguousBufferIdentity );
+		if ( isBase && layer.opacity != 1.0f )
+			return reject( DirectScanoutRejection::NotOpaqueBaseLayer );
+		if ( !validExtent( input.logicalExtent ) || layer.logicalRect.width == 0 ||
+			layer.logicalRect.height == 0 ||
+			!contains( input.logicalExtent, layer.logicalRect ) )
+			return reject( DirectScanoutRejection::InvalidLogicalRectangle );
+		if ( isBase && layer.logicalRect != Rect{ 0, 0,
+			input.logicalExtent.width, input.logicalExtent.height } )
+			return reject( DirectScanoutRejection::NotOpaqueBaseLayer );
+
+		const Extent expectedBufferExtent = transformExtent(
+			{ layer.logicalRect.width, layer.logicalRect.height }, input.outputTransform );
+		if ( layer.bufferExtent != expectedBufferExtent )
+			return reject( DirectScanoutRejection::NonNativeExtent );
+		if ( layer.contentExtent != layer.bufferExtent )
+			return reject( DirectScanoutRejection::ContentExtentMismatch );
+
+		switch ( proveClientTransform( layer.client, input.outputTransform ) )
+		{
+			case ClientTransformProof::NotProven:
+				return reject( DirectScanoutRejection::ClientTransformNotProven );
+			case ClientTransformProof::Ambiguous:
+				return reject( DirectScanoutRejection::AmbiguousClientTransform );
+			case ClientTransformProof::Proven:
+				break;
+		}
+
+		if ( !layer.formatCompatible )
+			return reject( DirectScanoutRejection::IncompatibleFormat );
+		if ( !layer.explicitModifier )
+			return reject( DirectScanoutRejection::AmbiguousModifier );
+		if ( !layer.modifierCompatible )
+			return reject( DirectScanoutRejection::IncompatibleModifier );
+		if ( !layer.framebufferImportable )
+			return reject( DirectScanoutRejection::FramebufferNotImportable );
+
+		if ( isBase )
+		{
+			if ( layer.zpos != 0 )
+				return reject( DirectScanoutRejection::InvalidLayerOrder );
+			if ( layer.blendMode != PlaneBlendMode::Opaque )
+				return reject( DirectScanoutRejection::IncompatibleBlend );
+		}
+		else
+		{
+			if ( layer.zpos <= input.layers[0].zpos )
+				return reject( DirectScanoutRejection::InvalidLayerOrder );
+			if ( !std::isfinite( layer.opacity ) || layer.opacity <= 0.0f ||
+				layer.opacity > 1.0f || !layer.alphaCompatible )
+				return reject( DirectScanoutRejection::IncompatibleAlpha );
+			if ( ( layer.blendMode != PlaneBlendMode::Premultiplied &&
+				layer.blendMode != PlaneBlendMode::Coverage ) ||
+				!layer.blendCompatible )
+				return reject( DirectScanoutRejection::IncompatibleBlend );
+			if ( !layer.zposCompatible )
+				return reject( DirectScanoutRejection::IncompatibleZpos );
+			if ( layer.bufferIdentity == input.layers[0].bufferIdentity )
+				return reject( DirectScanoutRejection::AmbiguousBufferIdentity );
+		}
+
+		const std::optional<Rect> destination = logicalToNative(
+			layer.logicalRect, input.logicalExtent, input.outputTransform );
+		if ( !destination )
+			return reject( DirectScanoutRejection::InvalidLogicalRectangle );
+
+		decision.records[i] = {
+			.bufferIdentity = layer.bufferIdentity,
+			.sourceRect = { 0, 0, layer.bufferExtent.width, layer.bufferExtent.height },
+			.destinationRect = *destination,
+			.zpos = layer.zpos,
+			.opacity = layer.opacity,
+			.blendMode = layer.blendMode,
+			.kmsTransform = Transform::Normal,
+		};
+	}
+
+	return decision;
 }
 
 } // namespace gamescope::output_rotation
