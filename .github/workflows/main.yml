@@ -1,52 +1,153 @@
 name: CI
+
 on:
   push:
-    branches: [ master ]
+    branches: [master]
   pull_request:
-    branches: [ master ]
+    branches: [master]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gamescope-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  native-tests:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, pf-pool-ci]
     container: archlinux:base-devel
     steps:
-      - name: Prepare
+      - name: Prepare build environment
         run: |
           pacman-key --init
           pacman -Syu --noconfirm
-          pacman -S --noconfirm git meson clang glslang libcap wlroots0.19 \
-            sdl2 vulkan-headers libx11 libxmu libxcomposite libxrender libxres \
-            libxtst libxkbcommon libdrm libinput wayland-protocols benchmark \
-            xorg-xwayland pipewire cmake \
-            libavif libheif aom rav1e libdecor libxdamage \
-            luajit \
-            catch2 gcovr
-      - uses: actions/checkout@v6
+          pacman -S --noconfirm git meson glslang libcap sdl2 vulkan-headers \
+            libx11 libxmu libxcomposite libxrender libxres libxtst \
+            libxkbcommon libdrm libinput wayland-protocols benchmark \
+            xorg-xwayland pipewire cmake libavif libheif aom rav1e \
+            libdecor libxdamage luajit catch2
+
+      - name: Check out the tested revision and exact submodules
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           submodules: recursive
-      - name: Build with gcc
+
+      - name: Verify exact submodule checkout
+        shell: bash
         run: |
-          export CC=gcc CXX=g++
-          meson setup build-gcc/ -Dinput_emulation=disabled --werror --auto-features=enabled
-          ninja -C build-gcc/
-      - name: Build with gcc (no vr)
+          set -euo pipefail
+          state="$(git submodule status --recursive)"
+          printf '%s\n' "$state"
+          if grep -Eq '^[+-U]' <<<"$state"; then
+            echo 'submodule checkout does not match the recorded gitlinks' >&2
+            exit 1
+          fi
+
+      - name: Build and run native tests
+        shell: bash
         run: |
+          set -euo pipefail
           export CC=gcc CXX=g++
-          meson setup build-gcc-novr/ -Dinput_emulation=disabled -Denable_openvr_support=false --werror --auto-features=enabled
-          ninja -C build-gcc-novr/
-#      - name: Build with clang
-#        run: |
-#          export CC=clang CXX=clang++
-#          meson setup build-clang/ -Dinput_emulation=disabled --werror --auto-features=enabled
-#          ninja -C build-clang/
-      - name: Run unit tests and collect coverage
+          meson setup build-native \
+            -Dinput_emulation=disabled \
+            -Denable_openvr_support=false \
+            --force-fallback-for=libdisplay-info,libliftoff,vkroots,wlroots \
+            --werror \
+            --auto-features=enabled
+          meson compile -C build-native
+          meson test -C build-native --suite gamescope --print-errorlogs
+
+  aarch64-build:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, pf-pool-ci]
+    container: debian:trixie-slim
+    steps:
+      - name: Prepare aarch64 cross environment
+        shell: bash
         run: |
-          export CC=gcc CXX=g++
-          meson configure -Db_coverage=true build-gcc
-          meson test -C build-gcc --suite gamescope -v
-          gcovr -f src --xml -o coverage.xml -s build-gcc
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v7
+          set -euo pipefail
+          dpkg --add-architecture arm64
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git file meson ninja-build cmake pkg-config \
+            crossbuild-essential-arm64 glslang-tools wayland-protocols \
+            libwayland-bin xwayland \
+            libx11-dev:arm64 libxdamage-dev:arm64 libxcomposite-dev:arm64 \
+            libxcursor-dev:arm64 libxrender-dev:arm64 libxext-dev:arm64 \
+            libxfixes-dev:arm64 libxxf86vm-dev:arm64 libxtst-dev:arm64 \
+            libxres-dev:arm64 libxmu-dev:arm64 libxi-dev:arm64 \
+            libdrm-dev:arm64 libwayland-dev:arm64 libxkbcommon-dev:arm64 \
+            libcap-dev:arm64 libsdl2-dev:arm64 libpixman-1-dev:arm64 \
+            libudev-dev:arm64 libseat-dev:arm64 libdecor-0-dev:arm64 \
+            libinput-dev:arm64 libxcb1-dev:arm64 libxcb-composite0-dev:arm64 \
+            libxcb-ewmh-dev:arm64 libxcb-icccm4-dev:arm64 \
+            libxcb-res0-dev:arm64 libxcb-xfixes0-dev:arm64 \
+            libluajit-5.1-dev:arm64 libvulkan-dev:arm64
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Check out the tested revision and exact submodules
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          name: code coverage
-          path: coverage.xml
+          submodules: recursive
+
+      - name: Verify exact submodule checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$(git submodule status --recursive)"
+          printf '%s\n' "$state"
+          if grep -Eq '^[+-U]' <<<"$state"; then
+            echo 'submodule checkout does not match the recorded gitlinks' >&2
+            exit 1
+          fi
+
+      - name: Build Gamescope for aarch64
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d /usr/local/libexec
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig' \
+            'exec pkg-config "$@"' \
+            > /usr/local/libexec/aarch64-pkg-config
+          chmod +x /usr/local/libexec/aarch64-pkg-config
+          printf '%s\n' \
+            '[binaries]' \
+            "c = 'aarch64-linux-gnu-gcc'" \
+            "cpp = 'aarch64-linux-gnu-g++'" \
+            "ar = 'aarch64-linux-gnu-gcc-ar'" \
+            "strip = 'aarch64-linux-gnu-strip'" \
+            "pkg-config = '/usr/local/libexec/aarch64-pkg-config'" \
+            '' \
+            '[properties]' \
+            'needs_exe_wrapper = true' \
+            '' \
+            '[host_machine]' \
+            "system = 'linux'" \
+            "cpu_family = 'aarch64'" \
+            "cpu = 'aarch64'" \
+            "endian = 'little'" \
+            > aarch64.ini
+          meson setup build-aarch64 \
+            --cross-file aarch64.ini \
+            -Dpipewire=disabled \
+            -Drt_cap=disabled \
+            -Ddrm_backend=enabled \
+            -Dsdl2_backend=enabled \
+            -Davif_screenshots=disabled \
+            -Dinput_emulation=disabled \
+            -Denable_openvr_support=false \
+            -Denable_tests=false \
+            -Dbenchmark=disabled \
+            --force-fallback-for=libdisplay-info,libliftoff,vkroots,wlroots \
+            --werror
+          meson compile -C build-aarch64
+          file build-aarch64/src/gamescope | grep -F 'ARM aarch64'
