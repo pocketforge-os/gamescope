@@ -1387,6 +1387,7 @@ import_commit (
 	struct wlr_buffer *buf,
 	bool async,
 	std::shared_ptr<wlserver_vk_swapchain_feedback> swapchain_feedback,
+	gamescope::output_rotation::ClientTransformMetadata clientTransform,
 	std::vector<struct wl_resource*> presentation_feedbacks,
 	std::optional<uint32_t> present_id,
 	uint64_t desired_present_time,
@@ -1404,6 +1405,7 @@ import_commit (
 	commit->presentation_feedbacks = std::move(presentation_feedbacks);
 	if (swapchain_feedback)
 		commit->feedback = *swapchain_feedback;
+	commit->clientTransform = clientTransform;
 	commit->present_id = present_id;
 	commit->desired_present_time = desired_present_time;
 	if (window_is_vr_scene_app( w )) {
@@ -1992,6 +1994,7 @@ void MouseCursor::paint(steamcompmgr_win_t *window, steamcompmgr_win_t *fit, str
 	layer->colorspace = GAMESCOPE_APP_TEXTURE_COLORSPACE_SRGB;
 
 	layer->eAlphaBlendingMode = cv_overlay_unmultiplied_alpha ? ALPHA_BLENDING_MODE_COVERAGE : ALPHA_BLENDING_MODE_PREMULTIPLIED;
+	layer->nativePlaneRole = gamescope::output_rotation::LayerRole::Cursor;
 }
 
 void MouseCursor::updateCursorFeedback( bool bForce )
@@ -2023,6 +2026,17 @@ struct BaseLayerInfo_t
 	AlphaBlendingMode_t eAlphaBlendingMode = ALPHA_BLENDING_MODE_PREMULTIPLIED;
 };
 
+static bool committed_buffer_transform_swaps_axes(
+	const gamescope::output_rotation::ClientTransformMetadata &metadata )
+{
+	using namespace gamescope::output_rotation;
+	const ClientTransform transform = metadata.clientClass == ClientClass::Xwayland
+		? metadata.vulkanPreTransform
+		: metadata.waylandBufferTransform;
+	return transform == ClientTransform::Rotate90 ||
+		transform == ClientTransform::Rotate270;
+}
+
 std::array< BaseLayerInfo_t, HELD_COMMIT_COUNT > g_CachedPlanes = {};
 
 static void
@@ -2048,6 +2062,8 @@ paint_cached_base_layer(const gamescope::Rc<commit_t>& commit, const BaseLayerIn
 	if (layer->colorspace == GAMESCOPE_APP_TEXTURE_COLORSPACE_SCRGB)
 		layer->ctm = s_scRGB709To2020Matrix;
 	layer->tex = commit->vulkanTex;
+	layer->clientTransform = commit->clientTransform;
+	layer->nativePlaneRole = gamescope::output_rotation::LayerRole::Base;
 
 	layer->filter = base.filter;
 	layer->eAlphaBlendingMode = base.eAlphaBlendingMode;
@@ -2117,6 +2133,12 @@ paint_window_commit( const gamescope::Rc<commit_t> &lastCommit, steamcompmgr_win
 	layer->filter = ( flags & PaintWindowFlag::NoFilter ) ? GamescopeUpscaleFilter::LINEAR : g_upscaleFilter;
 
 	layer->tex = lastCommit->GetTexture( layer->filter, g_upscaleScaler, layer->colorspace );
+	layer->clientTransform = lastCommit->clientTransform;
+	layer->nativePlaneRole = ( flags & PaintWindowFlag::BasePlane )
+		? gamescope::output_rotation::LayerRole::Base
+		: ( ( w->isOverlay || w->isExternalOverlay )
+			? gamescope::output_rotation::LayerRole::SystemOverlay
+			: gamescope::output_rotation::LayerRole::Unknown );
 
 	if ( flags & PaintWindowFlag::NoScale )
 	{
@@ -2140,6 +2162,11 @@ paint_window_commit( const gamescope::Rc<commit_t> &lastCommit, steamcompmgr_win
 
 			baseWidth = lastCommit->vulkanTex->width();
 			baseHeight = lastCommit->vulkanTex->height();
+			if ( committed_buffer_transform_swaps_axes( lastCommit->clientTransform ) )
+			{
+				std::swap( sourceWidth, sourceHeight );
+				std::swap( baseWidth, baseHeight );
+			}
 		} else {
 			sourceWidth = scaleW->GetGeometry().nWidth;
 			sourceHeight = scaleW->GetGeometry().nHeight;
@@ -7333,6 +7360,7 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 		buf,
 		reslistentry.async,
 		std::move(reslistentry.feedback),
+		reslistentry.clientTransform,
 		std::move(reslistentry.presentation_feedbacks),
 		reslistentry.present_id,
 		reslistentry.desired_present_time,

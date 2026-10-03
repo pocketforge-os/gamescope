@@ -323,6 +323,11 @@ struct FrameInfo_t
 
 		GamescopeAppTextureColorspace colorspace;
 
+		// Commit-snapshotted evidence for the narrow native-plane exception.
+		// Unknown/unclassified layers always fall back to composition.
+		gamescope::output_rotation::ClientTransformMetadata clientTransform = {};
+		gamescope::output_rotation::LayerRole nativePlaneRole = gamescope::output_rotation::LayerRole::Unknown;
+
 		bool isYcbcr() const
 		{
 			if ( !tex )

@@ -177,81 +177,298 @@ void test_capture_and_scanout_contract()
 	CHECK( !normal.rotateBeforeStaging );
 }
 
-DirectScanoutInput eligibleDirectInput()
+ClientTransform matchingClientTransform( Transform transform )
 {
+	return transform == Transform::Rotate90
+		? ClientTransform::Rotate90
+		: ClientTransform::Rotate270;
+}
+
+ClientTransform wrongClientTransform( Transform transform )
+{
+	return transform == Transform::Rotate90
+		? ClientTransform::Rotate270
+		: ClientTransform::Rotate90;
+}
+
+DirectScanoutLayerInput eligibleLayer( LayerRole role, Rect logicalRect,
+	Transform transform, uint64_t bufferIdentity )
+{
+	const Extent logicalLayerExtent = { logicalRect.width, logicalRect.height };
+	const Extent bufferExtent = transformExtent( logicalLayerExtent, transform );
 	return {
-		.outputTransform = Transform::Rotate90,
-		.layerCount = 1,
-		.logicalExtent = { 1280, 720 },
-		.bufferExtent = { 720, 1280 },
-		.contentExtent = { 720, 1280 },
-		.baseLayer = true,
-		.opaque = true,
-		.normalClientTransform = true,
-		.normalKmsTransform = true,
+		.bufferIdentity = bufferIdentity,
+		.role = role,
+		.bufferExtent = bufferExtent,
+		.contentExtent = bufferExtent,
+		.logicalRect = logicalRect,
+		.client = {
+			.clientClass = ClientClass::Wayland,
+			.waylandBufferTransform = matchingClientTransform( transform ),
+			.vulkanPreTransform = ClientTransform::Unknown,
+		},
+		.zpos = role == LayerRole::Base ? 0 : 3,
+		.opacity = role == LayerRole::Base ? 1.0f : 0.75f,
+		.blendMode = role == LayerRole::Base
+			? PlaneBlendMode::Opaque
+			: PlaneBlendMode::Premultiplied,
 		.formatCompatible = true,
 		.explicitModifier = true,
 		.modifierCompatible = true,
 		.framebufferImportable = true,
+		.alphaCompatible = true,
+		.blendCompatible = true,
+		.zposCompatible = true,
 	};
 }
 
-void expectRejected( DirectScanoutInput input, DirectScanoutRejection expected )
+DirectScanoutInput eligibleDirectInput( Transform transform = Transform::Rotate90 )
+{
+	DirectScanoutInput input = {
+		.outputTransform = transform,
+		.logicalExtent = { 1280, 720 },
+		.layerCount = 1,
+		.normalKmsTransform = true,
+	};
+	input.layers[0] = eligibleLayer( LayerRole::Base,
+		Rect{ 0, 0, 1280, 720 }, transform, 0xBA5E );
+	return input;
+}
+
+void expectRejected( const DirectScanoutInput &input, DirectScanoutRejection expected )
 {
 	const DirectScanoutDecision decision = directScanoutDecision( input );
 	CHECK( !decision.eligible );
 	CHECK( decision.rejection == expected );
 }
 
-void test_direct_scanout_is_native_only_and_fail_closed()
+void test_native_base_and_system_overlay_plane_records()
+{
+	const Rect overlayLogical = { 900, 500, 200, 100 };
+	for ( Transform transform : { Transform::Rotate90, Transform::Rotate270 } )
+	{
+		DirectScanoutInput baseOnlyInput = eligibleDirectInput( transform );
+		const DirectScanoutDecision baseOnly = directScanoutDecision( baseOnlyInput );
+		CHECK( baseOnly.eligible );
+		CHECK( baseOnly.rejection == DirectScanoutRejection::Accepted );
+		CHECK( baseOnly.recordCount == 1 );
+		CHECK( baseOnly.records[0].bufferIdentity == 0xBA5E );
+		CHECK( baseOnly.records[0].sourceRect == Rect{ 0, 0, 720, 1280 } );
+		CHECK( baseOnly.records[0].destinationRect == Rect{ 0, 0, 720, 1280 } );
+		CHECK( baseOnly.records[0].kmsTransform == Transform::Normal );
+
+		DirectScanoutInput withOverlayInput = baseOnlyInput;
+		withOverlayInput.layerCount = 2;
+		withOverlayInput.layers[1] = eligibleLayer( LayerRole::SystemOverlay,
+			overlayLogical, transform, 0x0A11 );
+		const DirectScanoutDecision withOverlay = directScanoutDecision( withOverlayInput );
+		CHECK( withOverlay.eligible );
+		CHECK( withOverlay.recordCount == 2 );
+		CHECK( withOverlay.records[0] == baseOnly.records[0] );
+		CHECK( withOverlay.records[1].bufferIdentity == 0x0A11 );
+		CHECK( withOverlay.records[1].sourceRect == Rect{ 0, 0, 100, 200 } );
+		CHECK( withOverlay.records[1].destinationRect ==
+			logicalToNative( overlayLogical, Extent{ 1280, 720 }, transform ) );
+		CHECK( withOverlay.records[1].kmsTransform == Transform::Normal );
+
+		// Showing and removing the overlay cannot mutate or replace the base.
+		const DirectScanoutDecision afterRemoval = directScanoutDecision( baseOnlyInput );
+		CHECK( afterRemoval.eligible );
+		CHECK( afterRemoval.records[0] == baseOnly.records[0] );
+
+		const std::array<uint32_t, 12> overlayPixels = {
+			0xA1, 0xB2, 0xC3, 0xD4,
+			0xE5, 0xF6, 0x17, 0x28,
+			0x39, 0x4A, 0x5B, 0x6C,
+		};
+		const std::array<uint32_t, 12> expected90 = {
+			0x39, 0xE5, 0xA1, 0x4A, 0xF6, 0xB2,
+			0x5B, 0x17, 0xC3, 0x6C, 0x28, 0xD4,
+		};
+		const std::array<uint32_t, 12> expected270 = {
+			0xD4, 0x28, 0x6C, 0xC3, 0x17, 0x5B,
+			0xB2, 0xF6, 0x4A, 0xA1, 0xE5, 0x39,
+		};
+		if ( transform == Transform::Rotate90 )
+			CHECK_IMAGE( transformImage( overlayPixels, Extent{ 4, 3 }, transform ), expected90 );
+		else
+			CHECK_IMAGE( transformImage( overlayPixels, Extent{ 4, 3 }, transform ), expected270 );
+	}
+}
+
+void test_client_transform_proof()
+{
+	for ( Transform transform : { Transform::Rotate90, Transform::Rotate270 } )
+	{
+		DirectScanoutInput input = eligibleDirectInput( transform );
+		CHECK( directScanoutDecision( input ).eligible );
+
+		// The Vulkan/Xwayland path is distinct: normal wl_surface metadata plus
+		// a matching committed VkSwapchain preTransform proves the native image.
+		input.layers[0].client = {
+			.clientClass = ClientClass::Xwayland,
+			.waylandBufferTransform = ClientTransform::Normal,
+			.vulkanPreTransform = matchingClientTransform( transform ),
+		};
+		CHECK( directScanoutDecision( input ).eligible );
+
+		input = eligibleDirectInput( transform );
+		input.layers[0].client.waylandBufferTransform = ClientTransform::Normal;
+		expectRejected( input, DirectScanoutRejection::ClientTransformNotProven );
+
+		input = eligibleDirectInput( transform );
+		input.layers[0].client.waylandBufferTransform = wrongClientTransform( transform );
+		expectRejected( input, DirectScanoutRejection::ClientTransformNotProven );
+
+		input = eligibleDirectInput( transform );
+		input.layers[0].client.waylandBufferTransform = ClientTransform::Unknown;
+		expectRejected( input, DirectScanoutRejection::ClientTransformNotProven );
+
+		input = eligibleDirectInput( transform );
+		input.layers[0].client.vulkanPreTransform = matchingClientTransform( transform );
+		expectRejected( input, DirectScanoutRejection::AmbiguousClientTransform );
+
+		input = eligibleDirectInput( transform );
+		input.layers[0].client = {
+			.clientClass = ClientClass::Xwayland,
+			.waylandBufferTransform = ClientTransform::Normal,
+			.vulkanPreTransform = wrongClientTransform( transform ),
+		};
+		expectRejected( input, DirectScanoutRejection::ClientTransformNotProven );
+
+		input = eligibleDirectInput( transform );
+		input.layers[0].client = {
+			.clientClass = ClientClass::Xwayland,
+			.waylandBufferTransform = ClientTransform::Normal,
+			.vulkanPreTransform = ClientTransform::Normal,
+		};
+		expectRejected( input, DirectScanoutRejection::ClientTransformNotProven );
+
+		input = eligibleDirectInput( transform );
+		input.layers[0].bufferExtent = { 1280, 720 };
+		input.layers[0].contentExtent = { 1280, 720 };
+		input.layers[0].client.waylandBufferTransform = ClientTransform::Normal;
+		expectRejected( input, DirectScanoutRejection::NonNativeExtent );
+
+		input = eligibleDirectInput( transform );
+		input.normalKmsTransform = false;
+		expectRejected( input, DirectScanoutRejection::KmsTransformNotNormal );
+	}
+}
+
+void test_native_plane_policy_fails_closed()
 {
 	DirectScanoutInput input = eligibleDirectInput();
-	DirectScanoutDecision decision = directScanoutDecision( input );
-	CHECK( decision.eligible );
-	CHECK( decision.rejection == DirectScanoutRejection::Accepted );
-	CHECK( decision.kmsTransform == Transform::Normal );
+	input.outputTransform = Transform::Normal;
+	expectRejected( input, DirectScanoutRejection::NoSoftwareRotation );
 
-	input.outputTransform = Transform::Rotate270;
-	decision = directScanoutDecision( input );
-	CHECK( decision.eligible );
-	CHECK( decision.kmsTransform == Transform::Normal );
+	input = eligibleDirectInput();
+	input.layerCount = 3;
+	expectRejected( input, DirectScanoutRejection::UnsupportedLayerCount );
+
+	input = eligibleDirectInput();
+	input.layers[0].role = LayerRole::Unknown;
+	expectRejected( input, DirectScanoutRejection::UnclassifiedLayer );
+
+	input = eligibleDirectInput();
+	input.layers[0].opacity = 0.5f;
+	expectRejected( input, DirectScanoutRejection::NotOpaqueBaseLayer );
+
+	input = eligibleDirectInput();
+	input.layers[0].bufferExtent = { 1280, 720 };
+	expectRejected( input, DirectScanoutRejection::NonNativeExtent );
+
+	input = eligibleDirectInput();
+	input.layers[0].contentExtent = { 700, 1280 };
+	expectRejected( input, DirectScanoutRejection::ContentExtentMismatch );
+
+	input = eligibleDirectInput();
+	input.layers[0].formatCompatible = false;
+	expectRejected( input, DirectScanoutRejection::IncompatibleFormat );
+
+	input = eligibleDirectInput();
+	input.layers[0].explicitModifier = false;
+	expectRejected( input, DirectScanoutRejection::AmbiguousModifier );
+
+	input = eligibleDirectInput();
+	input.layers[0].modifierCompatible = false;
+	expectRejected( input, DirectScanoutRejection::IncompatibleModifier );
+
+	input = eligibleDirectInput();
+	input.layers[0].framebufferImportable = false;
+	expectRejected( input, DirectScanoutRejection::FramebufferNotImportable );
 
 	input = eligibleDirectInput();
 	input.layerCount = 2;
-	expectRejected( input, DirectScanoutRejection::MultipleLayers );
+	input.layers[1] = eligibleLayer( LayerRole::Unknown,
+		Rect{ 900, 500, 200, 100 }, Transform::Rotate90, 0x0A11 );
+	expectRejected( input, DirectScanoutRejection::UnclassifiedLayer );
+
+	input.layers[1].role = LayerRole::Cursor;
+	expectRejected( input, DirectScanoutRejection::UnclassifiedLayer );
+
+	input.layers[1].role = LayerRole::SystemOverlay;
+	input.layers[1].logicalRect = { 1200, 700, 200, 100 };
+	expectRejected( input, DirectScanoutRejection::InvalidLogicalRectangle );
+
 	input = eligibleDirectInput();
-	input.baseLayer = false;
-	expectRejected( input, DirectScanoutRejection::NotOpaqueBaseLayer );
-	input = eligibleDirectInput();
-	input.opaque = false;
-	expectRejected( input, DirectScanoutRejection::NotOpaqueBaseLayer );
-	input = eligibleDirectInput();
-	input.bufferExtent = { 1280, 720 };
+	input.layerCount = 2;
+	input.layers[1] = eligibleLayer( LayerRole::SystemOverlay,
+		Rect{ 900, 500, 200, 100 }, Transform::Rotate90, 0x0A11 );
+	input.layers[1].bufferExtent = { 200, 100 };
 	expectRejected( input, DirectScanoutRejection::NonNativeExtent );
-	input = eligibleDirectInput();
-	input.contentExtent = { 700, 1280 };
+
+	input.layers[1].bufferExtent = { 100, 200 };
+	input.layers[1].contentExtent = { 100, 190 };
 	expectRejected( input, DirectScanoutRejection::ContentExtentMismatch );
-	input = eligibleDirectInput();
-	input.normalClientTransform = false;
-	expectRejected( input, DirectScanoutRejection::ClientTransformNotNormal );
-	input = eligibleDirectInput();
-	input.normalKmsTransform = false;
-	expectRejected( input, DirectScanoutRejection::KmsTransformNotNormal );
-	input = eligibleDirectInput();
-	input.formatCompatible = false;
+
+	input.layers[1].contentExtent = { 100, 200 };
+	input.layers[1].client.waylandBufferTransform = ClientTransform::Rotate270;
+	expectRejected( input, DirectScanoutRejection::ClientTransformNotProven );
+
+	input.layers[1].client.waylandBufferTransform = ClientTransform::Rotate90;
+	input.layers[1].client.vulkanPreTransform = ClientTransform::Rotate90;
+	expectRejected( input, DirectScanoutRejection::AmbiguousClientTransform );
+
+	input.layers[1].client.vulkanPreTransform = ClientTransform::Unknown;
+	input.layers[1].formatCompatible = false;
 	expectRejected( input, DirectScanoutRejection::IncompatibleFormat );
-	input = eligibleDirectInput();
-	input.explicitModifier = false;
+
+	input.layers[1].formatCompatible = true;
+	input.layers[1].explicitModifier = false;
 	expectRejected( input, DirectScanoutRejection::AmbiguousModifier );
-	input = eligibleDirectInput();
-	input.modifierCompatible = false;
+
+	input.layers[1].explicitModifier = true;
+	input.layers[1].modifierCompatible = false;
 	expectRejected( input, DirectScanoutRejection::IncompatibleModifier );
-	input = eligibleDirectInput();
-	input.framebufferImportable = false;
+
+	input.layers[1].modifierCompatible = true;
+	input.layers[1].framebufferImportable = false;
 	expectRejected( input, DirectScanoutRejection::FramebufferNotImportable );
-	input = eligibleDirectInput();
-	input.outputTransform = Transform::Normal;
-	expectRejected( input, DirectScanoutRejection::NoSoftwareRotation );
+
+	input.layers[1].framebufferImportable = true;
+	input.layers[1].zpos = 0;
+	expectRejected( input, DirectScanoutRejection::InvalidLayerOrder );
+
+	input.layers[1].zpos = 3;
+	input.layers[1].blendMode = PlaneBlendMode::Unsupported;
+	expectRejected( input, DirectScanoutRejection::IncompatibleBlend );
+
+	input.layers[1].blendMode = PlaneBlendMode::Coverage;
+	input.layers[1].alphaCompatible = false;
+	expectRejected( input, DirectScanoutRejection::IncompatibleAlpha );
+
+	input.layers[1].alphaCompatible = true;
+	input.layers[1].blendCompatible = false;
+	expectRejected( input, DirectScanoutRejection::IncompatibleBlend );
+
+	input.layers[1].blendCompatible = true;
+	input.layers[1].zposCompatible = false;
+	expectRejected( input, DirectScanoutRejection::IncompatibleZpos );
+
+	input.layers[1].zposCompatible = true;
+	input.layers[1].bufferIdentity = input.layers[0].bufferIdentity;
+	expectRejected( input, DirectScanoutRejection::AmbiguousBufferIdentity );
 }
 
 } // namespace
@@ -261,6 +478,8 @@ int main()
 	test_asymmetric_pixels_and_inverse_mappings();
 	test_layout_stride_damage_cursor_and_overlay_coordinates();
 	test_capture_and_scanout_contract();
-	test_direct_scanout_is_native_only_and_fail_closed();
+	test_native_base_and_system_overlay_plane_records();
+	test_client_transform_proof();
+	test_native_plane_policy_fails_closed();
 	return g_failures == 0 ? 0 : 1;
 }

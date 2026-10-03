@@ -23,6 +23,7 @@
 #include "vulkan_include.h"
 
 #include "steamcompmgr_shared.hpp"
+#include "output_rotation.hpp"
 
 #if HAVE_DRM
 #define HAVE_SESSION 1
@@ -45,6 +46,7 @@ struct ResListEntry_t {
 	bool async;
 	bool fifo;
 	std::shared_ptr<wlserver_vk_swapchain_feedback> feedback;
+	gamescope::output_rotation::ClientTransformMetadata clientTransform;
 	std::vector<struct wl_resource*> presentation_feedbacks;
 	std::optional<uint32_t> present_id;
 	uint64_t desired_present_time;

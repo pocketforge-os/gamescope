@@ -10,6 +10,7 @@ uniform layers_t {
 
     uint u_shaderFilter;
     uint u_alphaMode;
+    uint u_bufferTransform;
 
     // hdr
     float u_linearToNits; // sdr -> hdr
@@ -17,4 +18,3 @@ uniform layers_t {
     float u_itmSdrNits;
     float u_itmTargetNits;
 };
-
