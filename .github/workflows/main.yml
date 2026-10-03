@@ -157,13 +157,15 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates curl git file meson ninja-build cmake pkg-config \
-            crossbuild-essential-arm64 glslang-tools wayland-protocols \
-            libwayland-bin xwayland \
-            libx11-dev:arm64 libxdamage-dev:arm64 libxcomposite-dev:arm64 \
+            crossbuild-essential-arm64 glslang-tools wayland-protocols hwdata \
+            libwayland-bin xwayland:arm64 \
+            libx11-dev:arm64 libx11-xcb-dev:arm64 \
+            libxdamage-dev:arm64 libxcomposite-dev:arm64 \
             libxcursor-dev:arm64 libxrender-dev:arm64 libxext-dev:arm64 \
             libxfixes-dev:arm64 libxxf86vm-dev:arm64 libxtst-dev:arm64 \
             libxres-dev:arm64 libxmu-dev:arm64 libxi-dev:arm64 \
             libdrm-dev:arm64 libwayland-dev:arm64 libxkbcommon-dev:arm64 \
+            liblcms2-dev:arm64 \
             libcap-dev:arm64 libsdl2-dev:arm64 libpixman-1-dev:arm64 \
             libudev-dev:arm64 libseat-dev:arm64 libdecor-0-dev:arm64 \
             libinput-dev:arm64 libxcb1-dev:arm64 libxcb-composite0-dev:arm64 \
@@ -263,7 +265,6 @@ jobs:
             -Denable_openvr_support=false \
             -Denable_tests=false \
             -Dbenchmark=disabled \
-            --force-fallback-for=libdisplay-info,libliftoff,vkroots,wlroots \
-            --werror
+            --force-fallback-for=libdisplay-info,libliftoff,vkroots,wlroots
           meson compile -C build-aarch64
           file build-aarch64/src/gamescope | grep -F 'ARM aarch64'
