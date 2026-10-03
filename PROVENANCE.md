@@ -60,6 +60,17 @@ the other four inputs are exact checked-out gitlinks. Missing offline inputs,
 existing cache mismatches, packagecache mismatches, and licence mismatches all
 fail closed; the helper never repairs a mismatch by fetching replacement bytes.
 
+Every worker, coordinator, and CI build must prime this committed manifest
+before configuring Meson. The build directory must be fresh, or must be
+explicitly reconfigured with `--wrap-mode=nodownload`, before any compile;
+`meson compile` must never reuse a build directory configured without that
+option. CI starts each real build from a fresh directory. Its RED check begins
+with an otherwise complete verified cache and packagecache, removes only the
+required `glm` wrap archive, ensures the extracted `glm` subproject is absent,
+and requires the representative native `meson setup --wrap-mode=nodownload`
+to fail with Meson's disabled-download error. CI then restores and re-verifies
+the archive from the digest-keyed cache before the real build.
+
 `enable_openvr_support=false` excludes the pinned OpenVR gitlink from both CI
 configurations. The wraps shipped inside wlroots for `libdisplay-info`,
 `libdrm`, `libliftoff`, `libxkbcommon`, `pixman`, `seatd`, `wayland-protocols`,
@@ -120,11 +131,12 @@ gitlink is visible. The pins and admission decisions are:
 
 Repository CI is a regression gate: it verifies the recursive gitlink graph;
 exercises cold and offline-warm manifest caches; proves that missing and
-hash-mismatched offline artifacts fail; performs the native build and upstream
-unit tests; and performs an aarch64 Meson build. Both Meson configurations use
-`--wrap-mode=nodownload`. CI runs only on ephemeral container runners and
-rejects pull requests whose head repository is not this repository before a
-job can be scheduled.
+hash-mismatched offline artifacts fail; proves that a real Meson setup cannot
+use an absent required wrap; performs the native build and upstream unit tests;
+and performs an aarch64 Meson build. Both real Meson configurations are fresh
+and use `--wrap-mode=nodownload`. CI runs only on ephemeral container runners
+and rejects pull requests whose head repository is not this repository before
+a job can be scheduled.
 
 CI now proves the digest-locked, offline Meson source closure for this commit.
 CI success alone is not a PocketForge release receipt: release packaging must

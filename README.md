@@ -20,7 +20,11 @@ material, and a provenance update in the same pull request.
 
 CI primes the exact archives in [`.github/meson-sources.lock`](.github/meson-sources.lock),
 verifies their source and licence hashes, and configures Meson with downloads
-disabled. See `PROVENANCE.md` for the cold/warm cache and fail-closed policy.
+disabled. Every PocketForge worker, coordinator, and CI build must run the
+committed primer first, then use a fresh build directory or reconfigure the
+build directory with `--wrap-mode=nodownload` before compiling. Never run
+`meson compile` in a build directory configured without that option. See
+`PROVENANCE.md` for the cold/warm cache and fail-closed policy.
 
 In an embedded session usecase, gamescope does the same thing as steamcompmgr, but with less extra copies and latency:
 

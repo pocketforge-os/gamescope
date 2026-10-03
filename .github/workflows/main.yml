@@ -84,11 +84,54 @@ jobs:
             exit 1
           fi
 
+      - name: Prove a missing wrap blocks Meson
+        shell: bash
+        env:
+          MESON_SOURCE_CACHE_ROOT: ${{ runner.temp }}/gamescope-meson-source-cache/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}
+        run: |
+          set -euo pipefail
+          glm_archive="$(awk -F '\t' '$1 == "glm" { print $4 }' .github/meson-sources.lock)"
+          glm_root="$(awk -F '\t' '$1 == "glm" { print $5 }' .github/meson-sources.lock)"
+          if [[ -z "$glm_archive" || -z "$glm_root" || "$glm_archive" == */* || "$glm_root" == */* ]]; then
+            echo 'unsafe or missing glm manifest entry' >&2
+            exit 1
+          fi
+
+          rm -f "subprojects/packagecache/$glm_archive"
+          rm -rf "subprojects/$glm_root" build-wrap-red
+          if [[ -e "subprojects/packagecache/$glm_archive" || -e "subprojects/$glm_root" ]]; then
+            echo 'failed to remove the glm wrap input for the RED test' >&2
+            exit 1
+          fi
+
+          export CC=gcc CXX=g++
+          if meson setup build-wrap-red \
+            --wrap-mode=nodownload \
+            -Dinput_emulation=disabled \
+            -Denable_openvr_support=false \
+            --force-fallback-for=libdisplay-info,libliftoff,vkroots,wlroots \
+            --werror \
+            --auto-features=enabled \
+            > wrap-red.log 2>&1; then
+            cat wrap-red.log
+            echo 'Meson accepted a missing required wrap archive' >&2
+            exit 1
+          fi
+          cat wrap-red.log
+          grep -F 'ERROR: Automatic wrap-based subproject downloading is disabled' wrap-red.log
+
+          rm -rf build-wrap-red
+          restore_result="$(PF_MESON_CACHE_OFFLINE=1 .github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$restore_result"
+          grep -Fx 'cache_result=warm' <<<"$restore_result"
+          grep -Fx 'verified_sources=6' <<<"$restore_result"
+
       - name: Build and run native tests
         shell: bash
         run: |
           set -euo pipefail
           export CC=gcc CXX=g++
+          rm -rf build-native
           meson setup build-native \
             --wrap-mode=nodownload \
             -Dinput_emulation=disabled \
@@ -207,6 +250,7 @@ jobs:
             "cpu = 'aarch64'" \
             "endian = 'little'" \
             > aarch64.ini
+          rm -rf build-aarch64
           meson setup build-aarch64 \
             --cross-file aarch64.ini \
             --wrap-mode=nodownload \
