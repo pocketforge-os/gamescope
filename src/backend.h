@@ -365,6 +365,7 @@ namespace gamescope
 
         virtual bool SupportsPlaneHardwareCursor() const = 0;
         virtual bool SupportsTearing() const = 0;
+		virtual bool UsesVulkanOutputRotation() const { return false; }
 
         virtual bool UsesVulkanSwapchain() const = 0;
         virtual bool IsSessionBased() const = 0;

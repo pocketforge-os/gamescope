@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gamescope_shared.h"
+
 #include <cstdint>
 #include <optional>
 
@@ -53,6 +55,7 @@ struct Layout
 };
 
 Extent transformExtent( Extent logicalExtent, Transform transform );
+Transform transformFromPanelOrientation( GamescopePanelOrientation orientation );
 std::optional<Layout> makeLayout( Extent logicalExtent, Transform transform,
 	uint32_t bytesPerPixel, uint32_t rowPitchAlignment );
 

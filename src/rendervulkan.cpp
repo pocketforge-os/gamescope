@@ -46,6 +46,7 @@
 #include "cs_gaussian_blur_horizontal.h"
 #include "cs_nis.h"
 #include "cs_nis_fp16.h"
+#include "cs_output_rotate.h"
 #include "cs_rgb_to_nv12.h"
 
 #define A_CPU
@@ -120,12 +121,14 @@ static VkResult vulkan_load_module()
 
 VulkanOutput_t g_output;
 static std::atomic<uint64_t> s_compositionDispatches = 0;
+static std::atomic<uint64_t> s_outputRotations = 0;
 static std::atomic<uint64_t> s_stagingCopies = 0;
 
 VulkanOutputCounters vulkan_get_output_counters()
 {
 	return {
 		.compositionDispatches = s_compositionDispatches.load( std::memory_order_relaxed ),
+		.outputRotations = s_outputRotations.load( std::memory_order_relaxed ),
 		.stagingCopies = s_stagingCopies.load( std::memory_order_relaxed ),
 	};
 }
@@ -975,6 +978,7 @@ bool CVulkanDevice::createShaders()
 		SHADER(NIS, cs_nis);
 	}
 	SHADER(RGB_TO_NV12, cs_rgb_to_nv12);
+	SHADER(OUTPUT_ROTATE, cs_output_rotate);
 #undef SHADER
 
 	for (uint32_t i = 0; i < shaderInfos.size(); i++)
@@ -1205,6 +1209,7 @@ void CVulkanDevice::compileAllPipelines(std::stop_token st)
 	SHADER(EASU, 1, 1, 1);
 	SHADER(NIS, 1, 1, 1);
 	SHADER(RGB_TO_NV12, 1, 1, 1);
+	SHADER(OUTPUT_ROTATE, 1, 1, 1);
 #undef SHADER
 
 	for (auto& info : pipelineInfos) {
@@ -3429,9 +3434,20 @@ struct OutputRingCandidate
 {
 	std::vector<gamescope::OwningRc<CVulkanTexture>> presentImages;
 	std::vector<gamescope::OwningRc<CVulkanTexture>> compositionImages;
+	std::vector<gamescope::OwningRc<CVulkanTexture>> rotationImages;
 	gamescope::output_staging::OutputMode mode = gamescope::output_staging::OutputMode::Unsupported;
+	gamescope::output_rotation::Transform transform = gamescope::output_rotation::Transform::Normal;
 	uint64_t modifier = gamescope::output_staging::InvalidModifier;
 };
+
+static gamescope::output_rotation::Transform currentOutputTransform()
+{
+	if ( !GetBackend()->UsesVulkanOutputRotation() || !GetBackend()->GetCurrentConnector() )
+		return gamescope::output_rotation::Transform::Normal;
+
+	return gamescope::output_rotation::transformFromPanelOrientation(
+		GetBackend()->GetCurrentConnector()->GetCurrentOrientation() );
+}
 
 static const char *outputPlanRejectionName( gamescope::output_staging::Rejection rejection )
 {
@@ -3450,15 +3466,21 @@ static const char *outputPlanRejectionName( gamescope::output_staging::Rejection
 static bool allocateOutputRingForPlan(
 	uint32_t drmFormat,
 	const gamescope::output_staging::OutputPlan &plan,
+	gamescope::output_rotation::Transform transform,
 	const OutputRingCandidate *pReuse,
 	OutputRingCandidate *pCandidate )
 {
 	using gamescope::output_staging::OutputMode;
 	*pCandidate = {};
 	pCandidate->mode = plan.mode;
+	pCandidate->transform = transform;
 	pCandidate->modifier = plan.modifier;
 	pCandidate->presentImages.resize( 3 );
 	const std::array<uint64_t, 1> allowedModifiers = { plan.modifier };
+	const gamescope::output_rotation::FrameContract contract =
+		gamescope::output_rotation::frameContract(
+			{ uint32_t( g_nOutputWidth ), uint32_t( g_nOutputHeight ) }, transform );
+	const bool rotated = contract.rotateBeforeStaging;
 
 	CVulkanTexture::createFlags outputFlags;
 	outputFlags.bFlippable = true;
@@ -3468,15 +3490,32 @@ static bool allocateOutputRingForPlan(
 		outputFlags.bStorage = true;
 		outputFlags.bTransferSrc = true;
 		outputFlags.bSampled = true;
+		if ( rotated )
+			pCandidate->compositionImages.resize( 3 );
 		for ( uint32_t i = 0; i < pCandidate->presentImages.size(); i++ )
 		{
 			CVulkanTexture *pReuseImage = pReuse && pReuse->mode == OutputMode::Combined &&
-				pReuse->modifier == plan.modifier ? pReuse->presentImages[i].get() : nullptr;
+				pReuse->modifier == plan.modifier && pReuse->transform == transform
+					? pReuse->presentImages[i].get() : nullptr;
 			pCandidate->presentImages[i] = new CVulkanTexture();
 			if ( !pCandidate->presentImages[i]->BInit(
-				g_nOutputWidth, g_nOutputHeight, 1u, drmFormat, outputFlags,
+				contract.scanoutExtent.width, contract.scanoutExtent.height,
+				1u, drmFormat, outputFlags,
 				nullptr, 0, 0, pReuseImage, nullptr, allowedModifiers ) )
 				return false;
+
+			if ( rotated )
+			{
+				CVulkanTexture::createFlags compositionFlags;
+				compositionFlags.bStorage = true;
+				compositionFlags.bTransferSrc = true;
+				compositionFlags.bSampled = true;
+				pCandidate->compositionImages[i] = new CVulkanTexture();
+				if ( !pCandidate->compositionImages[i]->BInit(
+					contract.compositionExtent.width, contract.compositionExtent.height,
+					1u, drmFormat, compositionFlags ) )
+					return false;
+			}
 		}
 		return true;
 	}
@@ -3491,16 +3530,29 @@ static bool allocateOutputRingForPlan(
 	outputFlags.bTransferDst = true;
 	outputFlags.bLinear = true;
 	pCandidate->compositionImages.resize( 3 );
+	if ( rotated )
+		pCandidate->rotationImages.resize( 3 );
 	for ( uint32_t i = 0; i < pCandidate->presentImages.size(); i++ )
 	{
 		pCandidate->compositionImages[i] = new CVulkanTexture();
 		if ( !pCandidate->compositionImages[i]->BInit(
-			g_nOutputWidth, g_nOutputHeight, 1u, drmFormat, compositionFlags ) )
+			contract.compositionExtent.width, contract.compositionExtent.height,
+			1u, drmFormat, compositionFlags ) )
 			return false;
+
+		if ( rotated )
+		{
+			pCandidate->rotationImages[i] = new CVulkanTexture();
+			if ( !pCandidate->rotationImages[i]->BInit(
+				contract.rotatedExtent.width, contract.rotatedExtent.height,
+				1u, drmFormat, compositionFlags ) )
+				return false;
+		}
 
 		pCandidate->presentImages[i] = new CVulkanTexture();
 		if ( !pCandidate->presentImages[i]->BInit(
-			g_nOutputWidth, g_nOutputHeight, 1u, drmFormat, outputFlags,
+			contract.scanoutExtent.width, contract.scanoutExtent.height,
+			1u, drmFormat, outputFlags,
 			nullptr, 0, 0, nullptr, nullptr, allowedModifiers ) )
 			return false;
 	}
@@ -3510,6 +3562,7 @@ static bool allocateOutputRingForPlan(
 static bool allocateOutputRing(
 	uint32_t drmFormat,
 	bool partial,
+	gamescope::output_rotation::Transform transform,
 	const OutputRingCandidate *pReuse,
 	OutputRingCandidate *pCandidate )
 {
@@ -3522,14 +3575,15 @@ static bool allocateOutputRing(
 		return false;
 	}
 
-	if ( allocateOutputRingForPlan( drmFormat, plan, pReuse, pCandidate ) )
+	if ( allocateOutputRingForPlan( drmFormat, plan, transform, pReuse, pCandidate ) )
 		return true;
 
 	if ( plan.mode == OutputMode::Combined )
 	{
 		vk_log.infof( "combined output allocation for format 0x%x failed; checking linear staging", drmFormat );
 		plan = makeOutputPlan( drmFormat, kmsModifiers, false );
-		if ( plan.mode == OutputMode::Staged && allocateOutputRingForPlan( drmFormat, plan, nullptr, pCandidate ) )
+		if ( plan.mode == OutputMode::Staged &&
+			allocateOutputRingForPlan( drmFormat, plan, transform, nullptr, pCandidate ) )
 			return true;
 	}
 
@@ -3539,21 +3593,26 @@ static bool allocateOutputRing(
 
 static bool vulkan_make_output_images( VulkanOutput_t *pOutput )
 {
+	const gamescope::output_rotation::Transform transform = currentOutputTransform();
 	OutputRingCandidate primary;
-	if ( !allocateOutputRing( pOutput->uOutputFormat, false, nullptr, &primary ) )
+	if ( !allocateOutputRing( pOutput->uOutputFormat, false, transform, nullptr, &primary ) )
 		return false;
 
 	OutputRingCandidate partial;
 	if ( pOutput->uOutputFormatOverlay != VK_FORMAT_UNDEFINED && !kDisablePartialComposition &&
-		!allocateOutputRing( pOutput->uOutputFormatOverlay, true, &primary, &partial ) )
+		!allocateOutputRing( pOutput->uOutputFormatOverlay, true, transform, &primary, &partial ) )
 		return false;
 
 	pOutput->outputImages = std::move( primary.presentImages );
 	pOutput->outputCompositionImages = std::move( primary.compositionImages );
+	pOutput->outputRotationImages = std::move( primary.rotationImages );
 	pOutput->outputMode = primary.mode;
+	pOutput->outputTransform = primary.transform;
 	pOutput->outputImagesPartialOverlay = std::move( partial.presentImages );
 	pOutput->outputCompositionImagesPartialOverlay = std::move( partial.compositionImages );
+	pOutput->outputRotationImagesPartialOverlay = std::move( partial.rotationImages );
 	pOutput->outputModePartialOverlay = partial.mode;
+	pOutput->outputTransformPartialOverlay = partial.transform;
 
 	// Oh no.
 	pOutput->temporaryHackyBlankImage = vulkan_create_debug_blank_texture();
@@ -4012,6 +4071,19 @@ struct CaptureConvertBlitData_t
 	}
 };
 
+struct OutputRotateData_t
+{
+	uint32_t transform;
+
+	explicit OutputRotateData_t( gamescope::output_rotation::Transform outputTransform )
+		: transform( uint32_t( outputTransform ) )
+	{
+	}
+};
+
+static_assert( uint32_t( gamescope::output_rotation::Transform::Rotate90 ) == 1 );
+static_assert( uint32_t( gamescope::output_rotation::Transform::Rotate270 ) == 2 );
+
 struct uvec4_t
 {
 	uint32_t  x;
@@ -4250,9 +4322,15 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	const gamescope::output_staging::OutputMode outputMode = partial
 		? g_output.outputModePartialOverlay
 		: g_output.outputMode;
+	const gamescope::output_rotation::Transform outputTransform = partial
+		? g_output.outputTransformPartialOverlay
+		: g_output.outputTransform;
+	const bool rotateOutput = outputComposition &&
+		outputTransform != gamescope::output_rotation::Transform::Normal;
 	if ( pOutputOverride )
 		compositeImage = pOutputOverride;
-	else if ( outputComposition && outputMode == gamescope::output_staging::OutputMode::Staged )
+	else if ( outputComposition &&
+		( outputMode == gamescope::output_staging::OutputMode::Staged || rotateOutput ) )
 		compositeImage = partial
 			? g_output.outputCompositionImagesPartialOverlay[ g_output.nOutImage ]
 			: g_output.outputCompositionImages[ g_output.nOutImage ];
@@ -4440,13 +4518,45 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 		}
 	}
 
+	bool outputRotated = false;
+	gamescope::Rc<CVulkanTexture> stagingSource = compositeImage;
+	if ( rotateOutput )
+	{
+		gamescope::Rc<CVulkanTexture> rotationImage;
+		if ( outputMode == gamescope::output_staging::OutputMode::Staged )
+		{
+			rotationImage = partial
+				? g_output.outputRotationImagesPartialOverlay[ g_output.nOutImage ]
+				: g_output.outputRotationImages[ g_output.nOutImage ];
+		}
+		else
+		{
+			rotationImage = partial
+				? g_output.outputImagesPartialOverlay[ g_output.nOutImage ]
+				: g_output.outputImages[ g_output.nOutImage ];
+		}
+
+		cmdBuffer->clearState();
+		cmdBuffer->bindPipeline( g_device.pipeline( SHADER_TYPE_OUTPUT_ROTATE ) );
+		cmdBuffer->bindTexture( 0, compositeImage );
+		cmdBuffer->setTextureSrgb( 0, false );
+		cmdBuffer->setSamplerNearest( 0, true );
+		cmdBuffer->setSamplerUnnormalized( 0, true );
+		cmdBuffer->bindTarget( rotationImage );
+		cmdBuffer->uploadConstants<OutputRotateData_t>( outputTransform );
+		cmdBuffer->dispatch( div_roundup( rotationImage->width(), 8u ),
+			div_roundup( rotationImage->height(), 8u ) );
+		stagingSource = rotationImage;
+		outputRotated = true;
+	}
+
 	bool stagedCopy = false;
 	if ( outputComposition && outputMode == gamescope::output_staging::OutputMode::Staged )
 	{
 		gamescope::Rc<CVulkanTexture> scanoutImage = partial
 			? g_output.outputImagesPartialOverlay[ g_output.nOutImage ]
 			: g_output.outputImages[ g_output.nOutImage ];
-		cmdBuffer->copyImage( compositeImage, scanoutImage );
+		cmdBuffer->copyImage( stagingSource, scanoutImage );
 		stagedCopy = true;
 	}
 
@@ -4454,6 +4564,8 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	if ( outputComposition )
 	{
 		s_compositionDispatches.fetch_add( 1, std::memory_order_relaxed );
+		if ( outputRotated )
+			s_outputRotations.fetch_add( 1, std::memory_order_relaxed );
 		if ( stagedCopy )
 			s_stagingCopies.fetch_add( 1, std::memory_order_relaxed );
 	}

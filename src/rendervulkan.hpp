@@ -17,6 +17,7 @@
 
 #include "gamescope_shared.h"
 #include "backend.h"
+#include "output_rotation.hpp"
 #include "output_staging.hpp"
 
 #include "shaders/descriptor_set_constants.h"
@@ -283,6 +284,9 @@ enum AlphaBlendingMode_t
 
 struct FrameInfo_t
 {
+	// The final buffer is already in the physical KMS coordinate space and
+	// must be presented with a normal plane transform.
+	bool isNativeOutput = false;
 	bool useFSRLayer0;
 	bool useNISLayer0;
 	bool bFadingOut;
@@ -540,8 +544,12 @@ struct VulkanOutput_t
 	std::vector<gamescope::OwningRc<CVulkanTexture>> outputImagesPartialOverlay;
 	std::vector<gamescope::OwningRc<CVulkanTexture>> outputCompositionImages;
 	std::vector<gamescope::OwningRc<CVulkanTexture>> outputCompositionImagesPartialOverlay;
+	std::vector<gamescope::OwningRc<CVulkanTexture>> outputRotationImages;
+	std::vector<gamescope::OwningRc<CVulkanTexture>> outputRotationImagesPartialOverlay;
 	gamescope::output_staging::OutputMode outputMode = gamescope::output_staging::OutputMode::Unsupported;
 	gamescope::output_staging::OutputMode outputModePartialOverlay = gamescope::output_staging::OutputMode::Unsupported;
+	gamescope::output_rotation::Transform outputTransform = gamescope::output_rotation::Transform::Normal;
+	gamescope::output_rotation::Transform outputTransformPartialOverlay = gamescope::output_rotation::Transform::Normal;
 	gamescope::OwningRc<CVulkanTexture> temporaryHackyBlankImage;
 
 	uint32_t uOutputFormat = DRM_FORMAT_INVALID;
@@ -568,6 +576,7 @@ enum ShaderType {
 	SHADER_TYPE_RCAS,
 	SHADER_TYPE_NIS,
 	SHADER_TYPE_RGB_TO_NV12,
+	SHADER_TYPE_OUTPUT_ROTATE,
 
 	SHADER_TYPE_COUNT
 };
@@ -1021,6 +1030,7 @@ bool vulkan_supports_output_format( uint32_t drmFormat, std::span<const uint64_t
 struct VulkanOutputCounters
 {
 	uint64_t compositionDispatches;
+	uint64_t outputRotations;
 	uint64_t stagingCopies;
 };
 

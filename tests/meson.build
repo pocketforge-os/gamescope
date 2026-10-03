@@ -16,6 +16,14 @@ test_output_rotation = executable(
 )
 test('output-rotation', test_output_rotation)
 
+test_output_rotation_vulkan = executable(
+	'test_output_rotation_vulkan',
+	[spirv_shaders, 'test_output_rotation_vulkan.cpp'],
+	include_directories: [srcdir],
+	dependencies: [vulkan_dep],
+)
+test('output-rotation-vulkan', test_output_rotation_vulkan)
+
 test_output_staging_vulkan = executable(
 	'test_output_staging_vulkan',
 	'test_output_staging_vulkan.cpp',

@@ -103,3 +103,8 @@ their inverses, extent and aligned-stride calculations, damage rectangles,
 cursor points, external-overlay rectangles, logical capture versus native
 scanout, KMS-normal presentation, the positive native direct-scanout case, and
 negative controls for every fail-closed eligibility input.
+
+A software-Vulkan test separately runs the production compute shader at the
+target dimensions. Every pixel in its asymmetric `1280x720` source is unique;
+the test validates the complete `720x1280` LINEAR staging image for both quarter
+turns while honoring the implementation-reported row pitch.
