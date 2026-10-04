@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = ROOT / ".github" / "scripts" / "validate-source-closure.py"
 ADMITTER = ROOT / ".github" / "scripts" / "admit-source-closure.py"
 MATERIALIZER = ROOT / ".github" / "scripts" / "materialize-source-closure.py"
+TEST_REGISTRATION = ROOT / ".github" / "scripts" / "assert-test-registration.py"
 FIELDS = [
 	"schema",
 	"edge_id",
@@ -53,6 +54,37 @@ def sha256(data: bytes) -> str:
 
 
 class SourceClosureTests(unittest.TestCase):
+	def test_test_registration_assertion(self) -> None:
+		names = ["gamescope:convar", "libdisplay-info:pocketforge-source-locator"]
+		names.extend(f"libdisplay-info:fixture-{index}" for index in range(64))
+		names.extend(
+			[
+				"libliftoff:check_ndebug",
+				"libliftoff:alloc@basic",
+				"libliftoff:dynamic@same",
+				"libliftoff:priority@basic",
+				"libliftoff:prop@default-alpha",
+				"libliftoff:candidate@basic",
+			]
+		)
+		names.extend(f"libliftoff:fixture-{index}" for index in range(52))
+		fixture = "\n".join(names) + "\n"
+		positive = subprocess.run(
+			[sys.executable, str(TEST_REGISTRATION)],
+			input=fixture,
+			text=True,
+			capture_output=True,
+		)
+		self.assertEqual(positive.returncode, 0, positive.stderr)
+		negative = subprocess.run(
+			[sys.executable, str(TEST_REGISTRATION)],
+			input=fixture.replace("gamescope:convar\n", ""),
+			text=True,
+			capture_output=True,
+		)
+		self.assertNotEqual(negative.returncode, 0, negative.stdout)
+		self.assertIn("test registration count mismatch: gamescope", negative.stderr)
+
 	def setUp(self) -> None:
 		temp_parent = Path(os.environ.get("RUNNER_TEMP", ROOT / ".ci-cache"))
 		temp_parent.mkdir(parents=True, exist_ok=True)
