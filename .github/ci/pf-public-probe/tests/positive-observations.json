@@ -1,0 +1,31 @@
+{
+  "routes": [
+    {
+      "dst": "default",
+      "gateway": "192.168.155.1",
+      "dev": "enp1s0"
+    },
+    {
+      "dst": "192.168.155.0/24",
+      "dev": "enp1s0",
+      "prefsrc": "192.168.155.2"
+    }
+  ],
+  "dhcp_server": "192.168.155.1",
+  "dns_servers": [
+    "192.168.155.1"
+  ],
+  "gateway_dns_ok": true,
+  "public_https_ok": true,
+  "tcp_reachable": {
+    "gateway-ssh": false,
+    "modelmaker-ssh": false,
+    "pool-build-20-ssh": false,
+    "pool-build-21-ssh": false,
+    "pool-build-22-ssh": false,
+    "pool-build-23-ssh": false,
+    "aws-metadata": false,
+    "ecs-credentials": false,
+    "aliyun-metadata": false
+  }
+}
