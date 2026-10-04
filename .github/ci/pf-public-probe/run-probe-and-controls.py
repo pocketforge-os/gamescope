@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the pf-public probe and derive two fail-closed negative controls."""
+"""Run the pf-public probe and derive three fail-closed negative controls."""
 
 import argparse
 import copy
@@ -92,6 +92,11 @@ def main(argv=None):
     source.add_argument("--observations", type=pathlib.Path)
     args = parser.parse_args(argv)
 
+    contract = json.loads(args.config.read_text())["network_policies"]["pf-public"]["probe_contract"]
+    if contract.get("route_policy_version") != 3:
+        raise RuntimeError(
+            f"route_policy_version expected=3 actual={contract.get('route_policy_version')}"
+        )
     source_arguments = ["--live"] if args.live else ["--observations", str(args.observations)]
     baseline = invoke(args.probe, args.config, source_arguments)
     require_positive(baseline)
@@ -103,15 +108,18 @@ def main(argv=None):
         observations = json.loads(args.observations.read_text())
         print("public_probe_fixture_control=ok assertions=6")
 
-    contract = json.loads(args.config.read_text())["network_policies"]["pf-public"]["probe_contract"]
     temporary_root = os.environ.get("RUNNER_TEMP")
     with tempfile.TemporaryDirectory(prefix="pf-public-probe-", dir=temporary_root) as temporary:
         temporary_path = pathlib.Path(temporary)
 
         lan_observations = copy.deepcopy(observations)
+        uplink = next(
+            route["dev"] for route in observations["routes"] if route["dst"] == "default"
+        )
         lan_observations["routes"].append({
             "dst": "10.77.0.0/16",
             "gateway": contract["gateway_dns_dhcp"],
+            "dev": uplink,
         })
         lan_path = temporary_path / "lan-route.json"
         lan_path.write_text(json.dumps(lan_observations, sort_keys=True) + "\n")
@@ -119,6 +127,26 @@ def main(argv=None):
             invoke(args.probe, args.config, ["--observations", str(lan_path)]),
             "no_lan_route",
             "injected_lan_route",
+        )
+
+        policy_observations = copy.deepcopy(observations)
+        policy_observations["rules"].append({
+            "priority": 1000,
+            "src": "all",
+            "table": 100,
+        })
+        policy_observations["routes_all"].append({
+            "dst": "10.88.0.0/16",
+            "dev": uplink,
+            "table": 100,
+            "scope": "link",
+        })
+        policy_path = temporary_path / "policy-route.json"
+        policy_path.write_text(json.dumps(policy_observations, sort_keys=True) + "\n")
+        require_negative(
+            invoke(args.probe, args.config, ["--observations", str(policy_path)]),
+            "no_lan_route",
+            "injected_non_main_lan_route",
         )
 
         ssh_observations = copy.deepcopy(observations)
@@ -137,9 +165,9 @@ def main(argv=None):
         )
 
     if args.live:
-        print("public_probe_ci_status=ok live_controls=1 negative_controls=2")
+        print("public_probe_ci_status=ok live_controls=1 negative_controls=3")
     else:
-        print("public_probe_test_status=ok fixture_controls=1 negative_controls=2")
+        print("public_probe_test_status=ok fixture_controls=1 negative_controls=3")
     return 0
 
 

@@ -2,6 +2,8 @@
   "network_policies": {
     "pf-public": {
       "probe_contract": {
+        "route_policy_version": 3,
+        "local_bridge_pattern": "^(docker0|br-[0-9a-f]{12})$",
         "connected_subnet": "192.168.155.0/24",
         "gateway_dns_dhcp": "192.168.155.1",
         "dns_test_name": "github.com",

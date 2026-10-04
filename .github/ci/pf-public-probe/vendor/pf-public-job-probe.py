@@ -4,18 +4,14 @@
 import argparse
 import ipaddress
 import json
+import os
 import pathlib
+import re
 import socket
 import struct
 import subprocess
 import sys
 import urllib.request
-
-
-PRIVATE_ROUTES = tuple(ipaddress.ip_network(value) for value in (
-    "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
-    "172.16.0.0/12", "192.168.0.0/16",
-))
 
 
 def tcp_reachable(host, port, timeout=1.5):
@@ -88,6 +84,10 @@ def collect(contract):
     endpoints = contract["blocked_tcp_endpoints"]
     observations = {
         "routes": routes,
+        "rules": ip_json(["ip", "-json", "-4", "rule", "show"], "rule_collection_failed"),
+        "routes_all": ip_json(["ip", "-json", "-4", "route", "show", "table", "all"],
+                              "route_table_collection_failed"),
+        "links": link_facts({route.get("dev") for route in routes if isinstance(route, dict)}),
         "dhcp_server": dhcp_server_from_leases(),
         "dns_servers": configured_dns_servers(),
         "gateway_dns_ok": gateway_dns_ok(
@@ -107,45 +107,165 @@ def collect(contract):
     return observations
 
 
-def overlaps_private(route):
-    return any(route.subnet_of(private) or private.subnet_of(route) for private in PRIVATE_ROUTES)
+def ip_json(command, failure):
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(failure)
+    return json.loads(result.stdout)
+
+
+DEFAULT_RULES = {(0, "local"), (32766, "main"), (32767, "default")}
+RULE_KEYS = {"priority", "src", "table", "protocol"}
+
+
+def policy_tables_ok(observations):
+    """Policy routing may select only the kernel-default tables, each holding only what it should.
+
+    Rules are exactly the kernel defaults (0 local, 32766 main, 32767 default); any
+    other rule, selector or action fails. Table main must be the same table the v2
+    route policy evaluated. Table local holds only `local` entries for the guest's own
+    addresses (the uplink's and local bridges' connected-route sources, 127/8 on lo)
+    and `broadcast` entries for those subnets. Table default is empty. Any other
+    table, or anything unclassified, fails.
+    """
+    rules, routes_all, main_view = (observations.get("rules"), observations.get("routes_all"),
+                                    observations.get("routes"))
+    if not all(isinstance(item, list) for item in (rules, routes_all, main_view)):
+        return False
+    seen = set()
+    for rule in rules:
+        if (not isinstance(rule, dict) or not set(rule) <= RULE_KEYS or rule.get("src") != "all"
+                or rule.get("protocol", "kernel") != "kernel"
+                or not isinstance(rule.get("priority"), int) or isinstance(rule.get("priority"), bool)):
+            return False
+        seen.add((rule["priority"], rule.get("table")))
+    if len(rules) != len(DEFAULT_RULES) or seen != DEFAULT_RULES:
+        return False
+    if not all(isinstance(route, dict) for route in routes_all + main_view):
+        return False
+
+    def key(route):
+        return (route.get("dst"), route.get("dev"), route.get("gateway"), route.get("scope"))
+
+    main_all = [route for route in routes_all if route.get("table", "main") == "main"]
+    if sorted(map(key, main_all), key=repr) != sorted(map(key, main_view), key=repr):
+        return False
+    own = {}
+    for route in main_view:
+        if ("/" in str(route.get("dst")) and not route.get("gateway") and route.get("prefsrc")
+                and isinstance(route.get("dev"), str)):
+            try:
+                own.setdefault(route["dev"], []).append(
+                    (ipaddress.ip_address(route["prefsrc"]), ipaddress.ip_network(route["dst"])))
+            except ValueError:
+                return False
+    loopback = ipaddress.ip_network("127.0.0.0/8")
+    for route in routes_all:
+        table = route.get("table", "main")
+        if table == "main":
+            continue
+        if table != "local":
+            return False
+        kind, dev, dst = route.get("type"), route.get("dev"), route.get("dst")
+        if kind not in ("local", "broadcast") or not isinstance(dev, str) or not isinstance(dst, str):
+            return False
+        try:
+            network = ipaddress.ip_network(dst, strict=False)
+        except ValueError:
+            return False
+        if network.version != 4:
+            return False
+        if dev == "lo":
+            if not network.subnet_of(loopback) or (
+                    kind == "broadcast" and network != ipaddress.ip_network("127.255.255.255/32")):
+                return False
+            continue
+        entries = own.get(dev)
+        if not entries or network.prefixlen != 32:
+            return False
+        address = network.network_address
+        if kind == "local" and not any(address == source for source, _ in entries):
+            return False
+        if kind == "broadcast" and not any(address == subnet.broadcast_address for _, subnet in entries):
+            return False
+    return True
+
+
+def link_facts(names):
+    """Bridge membership for every route device, read from sysfs (unknown stays unknown)."""
+    root = pathlib.Path(os.environ.get("PF_PUBLIC_PROBE_SYSFS", "/sys/class/net"))
+    facts = {}
+    for name in sorted(n for n in names if isinstance(n, str)):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name):
+            continue
+        base = root / name
+        if not base.exists():
+            continue
+        bridge = (base / "bridge").is_dir()
+        try:
+            brif = sorted(entry.name for entry in (base / "brif").iterdir()) if bridge else []
+        except OSError:
+            continue
+        master = os.path.basename(os.readlink(base / "master")) if (base / "master").is_symlink() else None
+        facts[name] = {"bridge": bridge, "brif": brif, "master": master}
+    return facts
+
+
+def route_policy_ok(contract, observations):
+    """Classify every route by its egress device; anything unrecognised fails.
+
+    The uplink (the device of the single default route) may carry exactly the
+    default via the DHCP gateway, the connected pf-public subnet and an optional
+    scope-link /32 to that gateway. Any other device must be a guest-local Linux
+    bridge (docker0 / br-*) that the uplink is not enslaved to, carrying only a
+    connected subnet that does not overlap pf-public. Link state is irrelevant.
+    """
+    connected = ipaddress.ip_network(contract["connected_subnet"])
+    gateway = ipaddress.ip_address(contract["gateway_dns_dhcp"])
+    bridge_name = re.compile(contract["local_bridge_pattern"])
+    routes, links = observations.get("routes"), observations.get("links")
+    if not isinstance(routes, list) or not isinstance(links, dict) or not routes:
+        return False
+    if not all(isinstance(r, dict) and isinstance(r.get("dst"), str) and isinstance(r.get("dev"), str)
+               for r in routes):
+        return False
+    defaults = [r for r in routes if r["dst"] == "default"]
+    if len(defaults) != 1 or defaults[0].get("gateway") != str(gateway):
+        return False
+    uplink = defaults[0]["dev"]
+    uplink_facts = links.get(uplink)
+    if not isinstance(uplink_facts, dict) or uplink_facts.get("master") is not None or uplink_facts.get("bridge"):
+        return False
+    connected_seen = False
+    for route in routes:
+        if route is defaults[0]:
+            continue
+        try:
+            network = ipaddress.ip_network(route["dst"], strict=False)
+        except ValueError:
+            return False
+        if network.version != 4:
+            return False
+        if route["dev"] == uplink:
+            if route.get("gateway"):
+                return False
+            if network == connected:
+                connected_seen = True
+            elif network != ipaddress.ip_network(f"{gateway}/32") or route.get("scope") != "link":
+                return False
+            continue
+        facts = links.get(route["dev"])
+        if (not bridge_name.fullmatch(route["dev"]) or not isinstance(facts, dict)
+                or facts.get("bridge") is not True or not isinstance(facts.get("brif"), list)
+                or uplink in facts["brif"] or uplink_facts.get("master") == route["dev"]
+                or route.get("gateway") or network.overlaps(connected)):
+            return False
+    return connected_seen
 
 
 def evaluate(contract, observations):
-    connected = ipaddress.ip_network(contract["connected_subnet"])
     gateway = ipaddress.ip_address(contract["gateway_dns_dhcp"])
-    routes = observations.get("routes")
-    route_ok = isinstance(routes, list)
-    default_seen = False
-    connected_seen = False
-    if route_ok:
-        for route in routes:
-            if not isinstance(route, dict) or not isinstance(route.get("dst"), str):
-                route_ok = False
-                break
-            if route["dst"] == "default":
-                if route.get("gateway") != str(gateway):
-                    route_ok = False
-                default_seen = True
-                continue
-            try:
-                network = ipaddress.ip_network(route["dst"], strict=False)
-            except ValueError:
-                route_ok = False
-                break
-            if network == connected:
-                connected_seen = True
-            elif network.version == 4 and overlaps_private(network):
-                route_ok = False
-            if route.get("gateway") and route["gateway"] != str(gateway):
-                try:
-                    route_gateway = ipaddress.ip_address(route["gateway"])
-                except ValueError:
-                    route_ok = False
-                else:
-                    if any(route_gateway in private for private in PRIVATE_ROUTES):
-                        route_ok = False
-    route_ok = route_ok and default_seen and connected_seen
+    route_ok = route_policy_ok(contract, observations) and policy_tables_ok(observations)
 
     expected_endpoints = {item["name"] for item in contract["blocked_tcp_endpoints"]}
     reachable = observations.get("tcp_reachable")
