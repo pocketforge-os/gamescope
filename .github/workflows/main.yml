@@ -19,7 +19,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, pf-pool-ci]
+    runs-on: [self-hosted, pf-public-ci]
     container: archlinux:base-devel
     steps:
       - name: Prepare build environment
@@ -146,7 +146,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, pf-pool-ci]
+    runs-on: [self-hosted, pf-public-ci]
     container: debian:trixie-slim
     steps:
       - name: Prepare aarch64 cross environment
