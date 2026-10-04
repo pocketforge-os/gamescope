@@ -1,0 +1,11 @@
+# gamescope-vendored-sources-v1
+edge_id	target_path	source_path	transform
+snapshot-sol2	thirdparty/sol/sol.hpp	tests/single_header_snapshot.py	sol2-amalgamation-v1
+snapshot-nis	src/shaders/NVIDIAImageScaling/NIS/NIS_Config.h	NIS/NIS_Config.h	exact-copy
+snapshot-nis	src/shaders/NVIDIAImageScaling/NIS/NIS_Main.glsl	NIS/NIS_Main.glsl	exact-copy
+snapshot-nis	src/shaders/NVIDIAImageScaling/NIS/NIS_Main.hlsl	NIS/NIS_Main.hlsl	exact-copy
+snapshot-nis	src/shaders/NVIDIAImageScaling/NIS/NIS_Scaler.h	NIS/NIS_Scaler.h	exact-copy
+snapshot-nis	src/shaders/NVIDIAImageScaling/README.md	README.md	exact-copy
+snapshot-nis	src/shaders/NVIDIAImageScaling/licence.txt	licence.txt	exact-copy
+snapshot-fsr	src/shaders/ffx_a.h	ffx-fsr/ffx_a.h	exact-copy
+snapshot-fsr	src/shaders/ffx_fsr1.h	ffx-fsr/ffx_fsr1.h	exact-copy
