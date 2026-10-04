@@ -7,9 +7,13 @@ import argparse
 import configparser
 import csv
 import hashlib
+import io
+import os
 import re
 import subprocess
 import sys
+import tarfile
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -44,6 +48,7 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 PF_URL = re.compile(r"^https://github\.com/pocketforge-os/[A-Za-z0-9._-]+(?:\.git)?$")
 KINDS = {"gitlink", "wrap-git", "vendored-snapshot"}
 PATCH_STATUSES = {"unpatched", "patched", "snapshot-exact", "snapshot-patched"}
+SNAPSHOT_TRANSFORMS = {"exact-copy", "sol2-amalgamation-v1"}
 
 
 class ClosureError(Exception):
@@ -363,24 +368,15 @@ def discover_edges(
 			discovered[edge.edge_id] = actual
 			queue.append(edge)
 
-	registry_rows: dict[str, list[str]] = {}
-	for number, line in enumerate(registry.read_text(encoding="utf-8").splitlines(), start=1):
-		if not line or line.startswith("#"):
-			continue
-		parts = line.split("\t")
-		if len(parts) != 2:
-			fail(f"invalid vendored registry row: {number}")
-		edge_id, path = parts
-		safe_path(path, "vendored path", edge_id)
-		registry_rows.setdefault(edge_id, []).append(path)
-	for edge_id, paths in registry_rows.items():
+	registry_rows = parse_vendored_registry(registry)
+	for edge_id, rows in registry_rows.items():
 		edge = next((item for item in edges if item.edge_id == edge_id), None)
 		if edge is None:
 			fail(f"unlisted vendored snapshot: {edge_id}")
 		if edge.kind != "vendored-snapshot":
 			fail(f"vendored registry kind mismatch: {edge_id}")
 		digests: list[tuple[str, str]] = []
-		for relative in sorted(paths):
+		for relative, _source, _transform in sorted(rows):
 			try:
 				content = (repo_root / relative).read_bytes()
 			except OSError:
@@ -404,6 +400,35 @@ def discover_edges(
 	return discovered
 
 
+def parse_vendored_registry(path: Path) -> dict[str, list[tuple[str, str, str]]]:
+	lines = path.read_text(encoding="utf-8").splitlines()
+	if len(lines) < 2 or lines[0] != "# gamescope-vendored-sources-v1":
+		fail("unsupported vendored registry schema marker")
+	reader = csv.DictReader(lines[1:], dialect="excel-tab")
+	if reader.fieldnames != ["edge_id", "target_path", "source_path", "transform"]:
+		fail("vendored registry header mismatch")
+	rows: dict[str, list[tuple[str, str, str]]] = {}
+	seen_targets: set[str] = set()
+	for number, values in enumerate(reader, start=3):
+		if None in values or any(value is None for value in values.values()):
+			fail(f"invalid vendored registry row: {number}")
+		edge_id = values["edge_id"]
+		target = values["target_path"]
+		source = values["source_path"]
+		transform = values["transform"]
+		if not SAFE_ID.fullmatch(edge_id):
+			fail(f"unsafe vendored edge id: {number}")
+		safe_path(target, "vendored target path", edge_id)
+		safe_path(source, "vendored source path", edge_id)
+		if transform not in SNAPSHOT_TRANSFORMS:
+			fail(f"unsupported vendored transform: {edge_id}")
+		if target in seen_targets:
+			fail(f"duplicate vendored target: {target}")
+		seen_targets.add(target)
+		rows.setdefault(edge_id, []).append((target, source, transform))
+	return rows
+
+
 def compare_inventory(edges: list[Edge], discovered: dict[str, DiscoveredEdge]) -> None:
 	for edge in edges:
 		actual = discovered.get(edge.edge_id)
@@ -421,7 +446,74 @@ def compare_inventory(edges: list[Edge], discovered: dict[str, DiscoveredEdge]) 
 		fail("discovered edge count mismatch")
 
 
-def validate_cache(cache_root: Path, repo_root: Path, edges: list[Edge]) -> int:
+def verify_sol2_amalgamation(cache_root: Path, repo: Path, edge: Edge) -> None:
+	archive = run_git(repo, "archive", edge.pf_revision).stdout
+	with tempfile.TemporaryDirectory(prefix="sol2-transform-", dir=cache_root) as temporary:
+		root = Path(temporary)
+		with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
+			for member in source.getmembers():
+				safe_path(member.name, "sol2 archive path", edge.edge_id)
+				if member.issym() or member.islnk():
+					fail(f"unsupported sol2 archive link: {member.name}")
+			source.extractall(root, filter="data")
+		test_path = root / "tests" / "single_header_snapshot.py"
+		test_text = test_path.read_text(encoding="utf-8")
+		match = re.search(r'^EXPECTED_SHA256 = "([0-9a-f]{64})"$', test_text, re.MULTILINE)
+		if match is None or match.group(1) != edge.content_sha256:
+			fail(f"sol2 transform digest mismatch: {edge.edge_id}")
+		environment = os.environ.copy()
+		environment["TMPDIR"] = temporary
+		result = subprocess.run(
+			[sys.executable, str(test_path)],
+			cwd=root,
+			env=environment,
+			capture_output=True,
+			text=True,
+		)
+		if result.returncode != 0:
+			fail(f"sol2 transform failed: {edge.edge_id}: {result.stderr.strip()}")
+
+
+def verify_vendored_sources(
+	cache_root: Path,
+	repo_root: Path,
+	edges: list[Edge],
+	registry: Path,
+) -> None:
+	rows = parse_vendored_registry(registry)
+	snapshot_ids = {edge.edge_id for edge in edges if edge.kind == "vendored-snapshot"}
+	if set(rows) != snapshot_ids:
+		fail("vendored registry/manifest edge mismatch")
+	for edge in edges:
+		if edge.kind != "vendored-snapshot":
+			continue
+		repo = repo_for(cache_root, edge.project_id)
+		transforms = {transform for _target, _source, transform in rows[edge.edge_id]}
+		if transforms == {"sol2-amalgamation-v1"}:
+			if len(rows[edge.edge_id]) != 1:
+				fail(f"invalid sol2 transform row count: {edge.edge_id}")
+			verify_sol2_amalgamation(cache_root, repo, edge)
+		elif transforms == {"exact-copy"}:
+			for target, source, _transform in rows[edge.edge_id]:
+				source_content = git_show(repo, edge.pf_revision, source)
+				if source_content is None:
+					fail(f"missing vendored source path: {edge.edge_id}:{source}")
+				if (repo_root / target).read_bytes() != source_content:
+					fail(f"vendored source byte mismatch: {edge.edge_id}:{target}")
+		else:
+			fail(f"mixed vendored transforms: {edge.edge_id}")
+		receipt = (repo_root / edge.transform_receipt).read_text(encoding="utf-8")
+		for token in (edge.upstream_revision, edge.pf_revision, edge.content_sha256):
+			if token not in receipt:
+				fail(f"stale transform receipt: {edge.edge_id}")
+
+
+def validate_cache(
+	cache_root: Path,
+	repo_root: Path,
+	edges: list[Edge],
+	registry: Path,
+) -> int:
 	projects: set[tuple[str, str]] = set()
 	for edge in edges:
 		repo = repo_for(cache_root, edge.project_id)
@@ -455,21 +547,24 @@ def validate_cache(cache_root: Path, repo_root: Path, edges: list[Edge]) -> int:
 			if ancestry.returncode != 0:
 				fail(f"PocketForge pin is not based on upstream base: {edge.edge_id}")
 		if edge.locator_revision != edge.pf_revision:
+			if edge.patch_status != "patched":
+				fail(f"unpatched locator differs from PocketForge pin: {edge.edge_id}")
 			ancestry = run_git(
 				repo,
 				"merge-base",
 				"--is-ancestor",
+				edge.upstream_revision,
 				edge.locator_revision,
-				edge.pf_revision,
 				check=False,
 			)
 			if ancestry.returncode != 0:
-				fail(f"locator pin is not contained in PocketForge pin: {edge.edge_id}")
+				fail(f"locator pin is not based on upstream base: {edge.edge_id}")
 		if edge.kind == "vendored-snapshot":
 			receipt = repo_root / edge.transform_receipt
 			if not receipt.is_file():
 				fail(f"missing transform receipt: {edge.edge_id}")
 		projects.add((edge.project_id, edge.pf_revision))
+	verify_vendored_sources(cache_root, repo_root, edges, registry)
 	return len(projects)
 
 
@@ -488,7 +583,12 @@ def main() -> int:
 		edges, raw_manifest = parse_manifest(args.manifest)
 		discovered = discover_edges(args.repo_root, args.cache_root, edges, args.vendored_registry)
 		compare_inventory(edges, discovered)
-		project_count = validate_cache(args.cache_root, args.repo_root, edges)
+		project_count = validate_cache(
+			args.cache_root,
+			args.repo_root,
+			edges,
+			args.vendored_registry,
+		)
 	except (ClosureError, OSError, subprocess.CalledProcessError, UnicodeError) as error:
 		print(f"closure: {error}", file=sys.stderr)
 		return 1

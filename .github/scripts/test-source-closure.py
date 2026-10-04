@@ -92,12 +92,19 @@ class SourceClosureTests(unittest.TestCase):
 		)
 		(self.root / "vendor").mkdir()
 		(self.root / "vendor" / "snapshot.bin").write_bytes(b"admitted snapshot\n")
-		(self.root / "fixture-transform-v1").write_text("fixture transform\n", encoding="utf-8")
+		snapshot_digest = sha256(b"admitted snapshot\n")
+		(self.root / "fixture-transform-v1").write_text(
+			f"upstream={self.snapshot['commit']}\n"
+			f"pocketforge={self.snapshot['commit']}\n"
+			f"content={snapshot_digest}\n",
+			encoding="utf-8",
+		)
 		(self.root / ".github").mkdir()
 		self.registry = self.root / ".github" / "vendored-sources.tsv"
 		self.registry.write_text(
-			"# edge_id\tpath\n"
-			"snapshot\tvendor/snapshot.bin\n",
+			"# gamescope-vendored-sources-v1\n"
+			"edge_id\ttarget_path\tsource_path\ttransform\n"
+			"snapshot\tvendor/snapshot.bin\tsnapshot.bin\texact-copy\n",
 			encoding="utf-8",
 		)
 		run("git", "add", ".", cwd=self.root)
