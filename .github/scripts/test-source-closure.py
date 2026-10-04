@@ -15,6 +15,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = ROOT / ".github" / "scripts" / "validate-source-closure.py"
+ADMITTER = ROOT / ".github" / "scripts" / "admit-source-closure.py"
+MATERIALIZER = ROOT / ".github" / "scripts" / "materialize-source-closure.py"
 FIELDS = [
 	"schema",
 	"edge_id",
@@ -158,6 +160,11 @@ class SourceClosureTests(unittest.TestCase):
 			),
 		]
 		self.write_manifest(self.rows)
+		self.cache_base = self.base / "cache-base"
+		admitted_cache = self.cache_base / sha256(self.manifest.read_bytes())
+		admitted_cache.parent.mkdir()
+		self.cache.rename(admitted_cache)
+		self.cache = admitted_cache
 
 	def tearDown(self) -> None:
 		self.temp.cleanup()
@@ -297,6 +304,59 @@ class SourceClosureTests(unittest.TestCase):
 		positive = self.invoke()
 		self.assertEqual(positive.returncode, 0, positive.stderr)
 		self.assertIn("validated_edges=4", positive.stdout)
+
+		admission_receipt = self.base / "admission.json"
+		admission = subprocess.run(
+			[
+				sys.executable,
+				str(ADMITTER),
+				"--repo-root",
+				str(self.root),
+				"--manifest",
+				str(self.manifest),
+				"--vendored-registry",
+				str(self.registry),
+				"--cache-root",
+				str(self.cache_base),
+				"--offline",
+				"--receipt",
+				str(admission_receipt),
+			],
+			text=True,
+			capture_output=True,
+		)
+		self.assertEqual(admission.returncode, 0, admission.stderr)
+		self.assertIn("cache_result=warm", admission.stdout)
+		self.assertTrue(admission_receipt.is_file())
+
+		materialized = self.base / "materialized"
+		materialization_receipt = self.base / "materialization.json"
+		materialization = subprocess.run(
+			[
+				sys.executable,
+				str(MATERIALIZER),
+				"--repo-root",
+				str(self.root),
+				"--manifest",
+				str(self.manifest),
+				"--vendored-registry",
+				str(self.registry),
+				"--cache-root",
+				str(self.cache),
+				"--output",
+				str(materialized),
+				"--receipt",
+				str(materialization_receipt),
+			],
+			text=True,
+			capture_output=True,
+		)
+		self.assertEqual(materialization.returncode, 0, materialization.stderr)
+		self.assertIn("materialized_git_inputs=3", materialization.stdout)
+		self.assertTrue((materialized / "deps" / "child" / "LICENSE").is_file())
+		self.assertTrue((materialized / "deps" / "child" / "deps" / "grandchild" / "LICENSE").is_file())
+		self.assertTrue((materialized / "subprojects" / "wrapped" / "LICENSE").is_file())
+		self.assertTrue(materialization_receipt.is_file())
 
 		extra_wrap = self.root / "subprojects" / "unlisted.wrap"
 		extra_wrap.write_text(
