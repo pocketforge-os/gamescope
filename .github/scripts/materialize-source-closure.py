@@ -201,6 +201,34 @@ def main() -> int:
 						dirs_exist_ok=True,
 					)
 
+		nested_wrap_projects = {
+			edge.project_id
+			for edge in edges
+			if edge.kind == "wrap-git" and edge.parent_id != "gamescope"
+		}
+		generated_aliases = 0
+		for edge in edges:
+			if (
+				edge.parent_id != "gamescope"
+				or edge.kind != "gitlink"
+				or edge.project_id not in nested_wrap_projects
+			):
+				continue
+			expected_directory = Path("subprojects") / edge.project_id
+			if validator.source_directory(edge) != expected_directory:
+				raise validator.ClosureError(f"cannot derive root wrap alias: {edge.edge_id}")
+			alias = args.output / expected_directory.with_suffix(".wrap")
+			if alias.exists():
+				raise validator.ClosureError(f"root wrap alias already exists: {edge.edge_id}")
+			alias.write_text(
+				"[wrap-git]\n"
+				f"directory = {edge.project_id}\n"
+				f"url = {edge.pf_url}\n"
+				f"revision = {edge.pf_revision}\n",
+				encoding="utf-8",
+			)
+			generated_aliases += 1
+
 		for edge in edges:
 			if edge.kind != "wrap-git":
 				continue
@@ -233,6 +261,7 @@ def main() -> int:
 		receipt = {
 			"schema": "gamescope-source-materialization-v1",
 			"gamescope_head": gamescope_head,
+			"generated_root_wrap_aliases": generated_aliases,
 			"manifest_sha256": manifest_sha256,
 			"materialized_git_inputs": materialized,
 			"normalized_gitlink_urls": normalized_gitlinks,
@@ -253,6 +282,7 @@ def main() -> int:
 
 	print(f"manifest_sha256={manifest_sha256}")
 	print(f"gamescope_head={gamescope_head}")
+	print(f"generated_root_wrap_aliases={generated_aliases}")
 	print(f"materialized_git_inputs={materialized}")
 	print(f"normalized_gitlink_urls={normalized_gitlinks}")
 	print(f"source_tree_sha256={receipt['source_tree_sha256']}")

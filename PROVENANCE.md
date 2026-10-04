@@ -89,7 +89,11 @@ commits into the digest-keyed bare-repository cache. Validation and
 materialization then run without network access. Materialization exports exact
 trees instead of running recursive submodule or Meson download logic, applies
 only Gamescope's committed glm/stb Meson overlays, and produces a receipt tied
-to the Gamescope revision and manifest digest.
+to the Gamescope revision and manifest digest. Because Meson globally registers
+nested fallback names, materialization also derives root wrap aliases for the
+direct libdisplay-info and libliftoff gitlinks. Those aliases contain the same
+manifest URL and pin; they make the direct version constraints authoritative
+without removing or modifying either nested fallback source.
 
 Every Meson configuration uses a fresh build directory and
 `--wrap-mode=nodownload`. A missing admitted object is an error. The retained
