@@ -1,5 +1,31 @@
 ## gamescope: the micro-compositor formerly known as steamcompmgr
 
+## PocketForge fork
+
+This repository is a full-history fork of
+[`ValveSoftware/gamescope`](https://github.com/ValveSoftware/gamescope). The
+PocketForge patch line starts from audited upstream commit
+`5fb8dce4a09d0a68d097b9faf9513782106bc843`; it does not replace or rewrite
+upstream history. See [PROVENANCE.md](PROVENANCE.md) for the exact source and
+dependency pins, build and licence decisions, and patch-branch policy.
+
+`pocketforge` is the protected default and pull-request base. It was created at
+the unchanged audited commit above; `master` remains the preserved upstream
+tracking line and is not a PocketForge integration base. Changes land on
+focused topic branches through pull requests. Direct pushes to `pocketforge`
+and mutable submodule branch pins are not permitted. An upstream dependency
+stays at its upstream URL while unmodified; a PocketForge change to a
+dependency requires a controlled fork, an immutable gitlink, preserved licence
+material, and a provenance update in the same pull request.
+
+CI primes the exact archives in [`.github/meson-sources.lock`](.github/meson-sources.lock),
+verifies their source and licence hashes, and configures Meson with downloads
+disabled. Every PocketForge worker, coordinator, and CI build must run the
+committed primer first, then use a fresh build directory or reconfigure the
+build directory with `--wrap-mode=nodownload` before compiling. Never run
+`meson compile` in a build directory configured without that option. See
+`PROVENANCE.md` for the cold/warm cache and fail-closed policy.
+
 In an embedded session usecase, gamescope does the same thing as steamcompmgr, but with less extra copies and latency:
 
  - It's getting game frames through Wayland by way of Xwayland, so there's no copy within X itself before it gets the frame.

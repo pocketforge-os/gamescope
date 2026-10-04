@@ -1,52 +1,276 @@
 name: CI
+
 on:
   push:
-    branches: [ master ]
+    branches: [pocketforge]
   pull_request:
-    branches: [ master ]
+    branches: [pocketforge]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gamescope-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  native-tests:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, pf-public-ci]
     container: archlinux:base-devel
     steps:
-      - name: Prepare
+      - name: Prepare build environment
         run: |
           pacman-key --init
           pacman -Syu --noconfirm
-          pacman -S --noconfirm git meson clang glslang libcap wlroots0.19 \
-            sdl2 vulkan-headers libx11 libxmu libxcomposite libxrender libxres \
-            libxtst libxkbcommon libdrm libinput wayland-protocols benchmark \
-            xorg-xwayland pipewire cmake \
-            libavif libheif aom rav1e libdecor libxdamage \
-            luajit \
-            catch2 gcovr
-      - uses: actions/checkout@v6
+          pacman -S --noconfirm ca-certificates curl git meson glslang libcap sdl2 vulkan-headers vulkan-icd-loader \
+            libx11 libxmu libxcomposite libxrender libxres libxtst \
+            libxkbcommon libdrm libinput wayland-protocols benchmark \
+            xorg-xwayland pipewire cmake libavif libheif aom rav1e \
+            libdecor libxdamage lcms2 seatd \
+            xcb-util-wm xcb-util-renderutil xcb-util-errors \
+            luajit catch2
+
+      - name: Check out the tested revision and exact submodules
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           submodules: recursive
-      - name: Build with gcc
+
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Verify exact submodule checkout
+        shell: bash
         run: |
-          export CC=gcc CXX=g++
-          meson setup build-gcc/ -Dinput_emulation=disabled --werror --auto-features=enabled
-          ninja -C build-gcc/
-      - name: Build with gcc (no vr)
+          set -euo pipefail
+          state="$(git submodule status --recursive)"
+          printf '%s\n' "$state"
+          if grep -Eq '^[+-U]' <<<"$state"; then
+            echo 'submodule checkout does not match the recorded gitlinks' >&2
+            exit 1
+          fi
+
+      - name: Prime and verify immutable Meson sources
+        shell: bash
+        env:
+          MESON_SOURCE_CACHE_ROOT: ${{ runner.temp }}/gamescope-meson-source-cache/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}
         run: |
-          export CC=gcc CXX=g++
-          meson setup build-gcc-novr/ -Dinput_emulation=disabled -Denable_openvr_support=false --werror --auto-features=enabled
-          ninja -C build-gcc-novr/
-#      - name: Build with clang
-#        run: |
-#          export CC=clang CXX=clang++
-#          meson setup build-clang/ -Dinput_emulation=disabled --werror --auto-features=enabled
-#          ninja -C build-clang/
-      - name: Run unit tests and collect coverage
+          set -euo pipefail
+          cold_result="$(.github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$cold_result"
+          grep -Fx 'cache_result=cold' <<<"$cold_result"
+
+          warm_result="$(PF_MESON_CACHE_OFFLINE=1 .github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$warm_result"
+          grep -Fx 'cache_result=warm' <<<"$warm_result"
+
+          if PF_MESON_CACHE_OFFLINE=1 \
+            MESON_SOURCE_CACHE_ROOT="${MESON_SOURCE_CACHE_ROOT}-missing" \
+            .github/scripts/prime-meson-sources.sh; then
+            echo 'an incomplete offline cache was accepted' >&2
+            exit 1
+          fi
+
+          manifest_key="$(sha256sum .github/meson-sources.lock | awk '{print $1}')"
+          corrupt_root="${MESON_SOURCE_CACHE_ROOT}-corrupt"
+          install -d "$corrupt_root/$manifest_key"
+          cp -a "$MESON_SOURCE_CACHE_ROOT/$manifest_key/." "$corrupt_root/$manifest_key/"
+          corrupt_archive="$(awk -F '\t' '$1 == "glm" { print $4 }' .github/meson-sources.lock)"
+          printf 'corrupt\n' > "$corrupt_root/$manifest_key/$corrupt_archive"
+          if PF_MESON_CACHE_OFFLINE=1 \
+            MESON_SOURCE_CACHE_ROOT="$corrupt_root" \
+            .github/scripts/prime-meson-sources.sh; then
+            echo 'a hash-mismatched offline cache was accepted' >&2
+            exit 1
+          fi
+
+      - name: Prove a missing wrap blocks Meson
+        shell: bash
+        env:
+          MESON_SOURCE_CACHE_ROOT: ${{ runner.temp }}/gamescope-meson-source-cache/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}
         run: |
+          set -euo pipefail
+          glm_archive="$(awk -F '\t' '$1 == "glm" { print $4 }' .github/meson-sources.lock)"
+          glm_root="$(awk -F '\t' '$1 == "glm" { print $5 }' .github/meson-sources.lock)"
+          if [[ -z "$glm_archive" || -z "$glm_root" || "$glm_archive" == */* || "$glm_root" == */* ]]; then
+            echo 'unsafe or missing glm manifest entry' >&2
+            exit 1
+          fi
+
+          rm -f "subprojects/packagecache/$glm_archive"
+          rm -rf "subprojects/$glm_root" build-wrap-red
+          if [[ -e "subprojects/packagecache/$glm_archive" || -e "subprojects/$glm_root" ]]; then
+            echo 'failed to remove the glm wrap input for the RED test' >&2
+            exit 1
+          fi
+
           export CC=gcc CXX=g++
-          meson configure -Db_coverage=true build-gcc
-          meson test -C build-gcc --suite gamescope -v
-          gcovr -f src --xml -o coverage.xml -s build-gcc
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v7
+          if meson setup build-wrap-red \
+            --wrap-mode=nodownload \
+            -Dinput_emulation=disabled \
+            -Denable_openvr_support=false \
+            --force-fallback-for=libdisplay-info,libliftoff,vkroots,wlroots \
+            --werror \
+            --auto-features=enabled \
+            > wrap-red.log 2>&1; then
+            cat wrap-red.log
+            echo 'Meson accepted a missing required wrap archive' >&2
+            exit 1
+          fi
+          cat wrap-red.log
+          grep -F 'ERROR: Automatic wrap-based subproject downloading is disabled' wrap-red.log
+
+          rm -rf build-wrap-red
+          restore_result="$(PF_MESON_CACHE_OFFLINE=1 .github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$restore_result"
+          grep -Fx 'cache_result=warm' <<<"$restore_result"
+          grep -Fx 'verified_sources=6' <<<"$restore_result"
+
+      - name: Build and run native tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CC=gcc CXX=g++
+          rm -rf build-native
+          meson setup build-native \
+            --wrap-mode=nodownload \
+            -Dinput_emulation=disabled \
+            -Denable_openvr_support=false \
+            --force-fallback-for=libdisplay-info,libliftoff,vkroots,wlroots \
+            --werror \
+            --auto-features=enabled
+          meson compile -C build-native
+          meson test -C build-native --suite gamescope --print-errorlogs
+
+  aarch64-build:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, pf-public-ci]
+    container: debian:trixie-slim
+    steps:
+      - name: Prepare aarch64 cross environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          dpkg --add-architecture arm64
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git file meson ninja-build cmake pkg-config \
+            crossbuild-essential-arm64 glslang-tools wayland-protocols hwdata \
+            libwayland-bin xwayland:arm64 \
+            libx11-dev:arm64 libx11-xcb-dev:arm64 \
+            libxdamage-dev:arm64 libxcomposite-dev:arm64 \
+            libxcursor-dev:arm64 libxrender-dev:arm64 libxext-dev:arm64 \
+            libxfixes-dev:arm64 libxxf86vm-dev:arm64 libxtst-dev:arm64 \
+            libxres-dev:arm64 libxmu-dev:arm64 libxi-dev:arm64 \
+            libdrm-dev:arm64 libwayland-dev:arm64 libxkbcommon-dev:arm64 \
+            liblcms2-dev:arm64 \
+            libcap-dev:arm64 libsdl2-dev:arm64 libpixman-1-dev:arm64 \
+            libudev-dev:arm64 libseat-dev:arm64 libdecor-0-dev:arm64 \
+            libinput-dev:arm64 libxcb1-dev:arm64 libxcb-composite0-dev:arm64 \
+            libxcb-ewmh-dev:arm64 libxcb-icccm4-dev:arm64 \
+            libxcb-res0-dev:arm64 libxcb-xfixes0-dev:arm64 \
+            libluajit-5.1-dev:arm64 libvulkan-dev:arm64
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Check out the tested revision and exact submodules
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          name: code coverage
-          path: coverage.xml
+          submodules: recursive
+
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Verify exact submodule checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$(git submodule status --recursive)"
+          printf '%s\n' "$state"
+          if grep -Eq '^[+-U]' <<<"$state"; then
+            echo 'submodule checkout does not match the recorded gitlinks' >&2
+            exit 1
+          fi
+
+      - name: Prime and verify immutable Meson sources
+        shell: bash
+        env:
+          MESON_SOURCE_CACHE_ROOT: ${{ runner.temp }}/gamescope-meson-source-cache/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}
+        run: |
+          set -euo pipefail
+          cold_result="$(.github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$cold_result"
+          grep -Fx 'cache_result=cold' <<<"$cold_result"
+
+          warm_result="$(PF_MESON_CACHE_OFFLINE=1 .github/scripts/prime-meson-sources.sh)"
+          printf '%s\n' "$warm_result"
+          grep -Fx 'cache_result=warm' <<<"$warm_result"
+
+          if PF_MESON_CACHE_OFFLINE=1 \
+            MESON_SOURCE_CACHE_ROOT="${MESON_SOURCE_CACHE_ROOT}-missing" \
+            .github/scripts/prime-meson-sources.sh; then
+            echo 'an incomplete offline cache was accepted' >&2
+            exit 1
+          fi
+
+          manifest_key="$(sha256sum .github/meson-sources.lock | awk '{print $1}')"
+          corrupt_root="${MESON_SOURCE_CACHE_ROOT}-corrupt"
+          install -d "$corrupt_root/$manifest_key"
+          cp -a "$MESON_SOURCE_CACHE_ROOT/$manifest_key/." "$corrupt_root/$manifest_key/"
+          corrupt_archive="$(awk -F '\t' '$1 == "glm" { print $4 }' .github/meson-sources.lock)"
+          printf 'corrupt\n' > "$corrupt_root/$manifest_key/$corrupt_archive"
+          if PF_MESON_CACHE_OFFLINE=1 \
+            MESON_SOURCE_CACHE_ROOT="$corrupt_root" \
+            .github/scripts/prime-meson-sources.sh; then
+            echo 'a hash-mismatched offline cache was accepted' >&2
+            exit 1
+          fi
+
+      - name: Build Gamescope for aarch64
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d /usr/local/libexec
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig' \
+            'exec pkg-config "$@"' \
+            > /usr/local/libexec/aarch64-pkg-config
+          chmod +x /usr/local/libexec/aarch64-pkg-config
+          printf '%s\n' \
+            '[binaries]' \
+            "c = 'aarch64-linux-gnu-gcc'" \
+            "cpp = 'aarch64-linux-gnu-g++'" \
+            "ar = 'aarch64-linux-gnu-gcc-ar'" \
+            "strip = 'aarch64-linux-gnu-strip'" \
+            "pkg-config = '/usr/local/libexec/aarch64-pkg-config'" \
+            '' \
+            '[properties]' \
+            'needs_exe_wrapper = true' \
+            '' \
+            '[host_machine]' \
+            "system = 'linux'" \
+            "cpu_family = 'aarch64'" \
+            "cpu = 'aarch64'" \
+            "endian = 'little'" \
+            > aarch64.ini
+          rm -rf build-aarch64
+          meson setup build-aarch64 \
+            --cross-file aarch64.ini \
+            --wrap-mode=nodownload \
+            -Dpipewire=disabled \
+            -Drt_cap=disabled \
+            -Ddrm_backend=enabled \
+            -Dsdl2_backend=enabled \
+            -Davif_screenshots=disabled \
+            -Dinput_emulation=disabled \
+            -Denable_openvr_support=false \
+            -Denable_tests=false \
+            -Dbenchmark=disabled \
+            --force-fallback-for=libdisplay-info,libliftoff,vkroots,wlroots
+          meson compile -C build-aarch64
+          file build-aarch64/src/gamescope | grep -F 'ARM aarch64'
