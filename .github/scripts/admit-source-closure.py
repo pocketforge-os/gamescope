@@ -14,6 +14,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 VALIDATOR_PATH = SCRIPT_DIR / "validate-source-closure.py"
+sys.dont_write_bytecode = True
 
 
 def load_validator():
