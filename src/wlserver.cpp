@@ -56,6 +56,7 @@
 #include "presentation-time-protocol.h"
 
 #include "wlserver.hpp"
+#include "system_overlay_auth.hpp"
 #include "hdmi.h"
 #include "main.hpp"
 #include "steamcompmgr.hpp"
@@ -76,8 +77,10 @@
 #include "gpuvis_trace_utils.h"
 
 #include <algorithm>
+#include <fstream>
 #include <list>
 #include <set>
+#include <sstream>
 
 static LogScope wl_log("wlserver");
 
@@ -1676,6 +1679,51 @@ static void handle_wlr_log(enum wlr_log_importance importance, const char *fmt, 
 	wl_log.vlogf(prio, fmt, args);
 }
 
+static std::atomic<pid_t> g_mangoapp_reaper_pid{ 0 };
+
+static std::optional<pid_t> get_parent_pid( pid_t pid )
+{
+	if ( pid <= 0 )
+		return std::nullopt;
+
+	std::ifstream proc_stat_file( "/proc/" + std::to_string( pid ) + "/stat" );
+	if ( !proc_stat_file.is_open() )
+		return std::nullopt;
+
+	std::string proc_stat;
+	if ( !std::getline( proc_stat_file, proc_stat ) )
+		return std::nullopt;
+
+	const size_t last_paren = proc_stat.rfind( ')' );
+	if ( last_paren == std::string::npos )
+		return std::nullopt;
+
+	std::istringstream fields( proc_stat.substr( last_paren + 2 ) );
+	char state = 0;
+	pid_t parent_pid = 0;
+	if ( !( fields >> state >> parent_pid ) )
+		return std::nullopt;
+
+	return parent_pid;
+}
+
+void wlserver_set_mangoapp_reaper_pid( pid_t pid )
+{
+	g_mangoapp_reaper_pid.store( pid > 0 ? pid : 0, std::memory_order_release );
+}
+
+static bool is_trusted_system_overlay_client( const struct wl_client *client )
+{
+	if ( !client )
+		return false;
+
+	pid_t pid = 0;
+	wl_client_get_credentials( const_cast<struct wl_client *>( client ), &pid, nullptr, nullptr );
+
+	return gamescope::system_overlay_auth::is_authenticated_peer(
+		pid, g_mangoapp_reaper_pid.load( std::memory_order_acquire ), get_parent_pid );
+}
+
 void wlserver_set_output_info( const wlserver_output_info *info )
 {
 	free(wlserver.output_info.description);
@@ -1693,6 +1741,12 @@ void wlserver_set_output_info( const wlserver_output_info *info )
 static bool filter_global(const struct wl_client *client, const struct wl_global *global, void *data)
 {
 	const struct wl_interface *iface = wl_global_get_interface(global);
+
+	// Layer-shell is the compositor-owned system-overlay contract. Keep it
+	// unavailable to application clients; Xwayland's legacy external-overlay
+	// property remains composition-only and never grants native-plane trust.
+	if ( strcmp(iface->name, zwlr_layer_shell_v1_interface.name) == 0 )
+		return is_trusted_system_overlay_client( client );
 
 	if ( cv_drm_debug_disable_explicit_sync && iface->name == "wp_linux_drm_syncobj_manager_v1"sv )
 		return false;
@@ -2026,14 +2080,16 @@ void xdg_surface_new(struct wl_listener *listener, void *data)
 void layer_shell_surface_new(struct wl_listener *listener, void *data)
 {
 	struct wlr_layer_surface_v1 *layer_surface = (struct wlr_layer_surface_v1 *)data;
+	struct wl_client *client = wl_resource_get_client( layer_surface->resource );
 
-	wlserver_xdg_surface_info *surface_info = waylandy_type_surface_new(nullptr, layer_surface->surface);
+	wlserver_xdg_surface_info *surface_info = waylandy_type_surface_new(client, layer_surface->surface);
 	surface_info->destroy.notify = waylandy_surface_destroy;
 	wl_signal_add(&layer_surface->events.destroy, &surface_info->destroy);
 
 	surface_info->layer_surface = layer_surface;
 
 	surface_info->win->isExternalOverlay = true;
+	surface_info->win->isTrustedSystemOverlay = is_trusted_system_overlay_client( client );
 }
 
 #if HAVE_LIBEIS

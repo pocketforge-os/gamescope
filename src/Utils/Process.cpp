@@ -269,7 +269,7 @@ namespace gamescope::Process
         }
     }
 
-    pid_t SpawnProcess( char **argv, std::function<void()> fnPreambleInChild, bool bDoubleFork )
+    pid_t SpawnProcess( char **argv, std::function<void()> fnPreambleInChild, bool bDoubleFork, ParentPostForkCallback fnParentPostFork )
     {
         // Create a pipe for the child to return the grandchild's
         // PID into.
@@ -283,6 +283,24 @@ namespace gamescope::Process
             }
         }
 
+        // Keep the child behind the parent-side publication callback. This is
+        // used when the child can immediately create a Wayland peer whose
+        // admission depends on the PID returned to the parent.
+        int nParentReadyPipe[2] = { -1, -1 };
+        if ( fnParentPostFork )
+        {
+            if ( pipe2( nParentReadyPipe, O_CLOEXEC ) != 0 )
+            {
+                if ( bDoubleFork )
+                {
+                    CloseFd( nPidPipe[0] );
+                    CloseFd( nPidPipe[1] );
+                }
+                s_ProcessLog.errorf( "Failed to create parent publication pipe" );
+                return -1;
+            }
+        }
+
         pid_t nChild = fork();
         if ( nChild < 0 )
         {
@@ -291,20 +309,38 @@ namespace gamescope::Process
                 CloseFd( nPidPipe[0] );
                 CloseFd( nPidPipe[1] );
             }
+            if ( fnParentPostFork )
+            {
+                CloseFd( nParentReadyPipe[0] );
+                CloseFd( nParentReadyPipe[1] );
+            }
             s_ProcessLog.errorf_errno( "Failed to fork() child" );
             return -1;
         }
         else if ( nChild == 0 )
         {
-            std::array<int, 5> nExcludedFds =
+            std::array<int, 7> nExcludedFds =
             {{
                 STDIN_FILENO,
                 STDOUT_FILENO,
                 STDERR_FILENO,
                 nPidPipe[0], // -1 if !bDoubleFork, which is fine.
                 nPidPipe[1],
+                nParentReadyPipe[0], // -1 if !fnParentPostFork, which is fine.
+                nParentReadyPipe[1],
             }};
             CloseAllFds( nExcludedFds );
+
+            if ( fnParentPostFork )
+            {
+                CloseFd( nParentReadyPipe[1] );
+
+                char nPublished = 0;
+                ssize_t sszAmountRead = read( nParentReadyPipe[0], &nPublished, sizeof( nPublished ) );
+                CloseFd( nParentReadyPipe[0] );
+                if ( sszAmountRead != sizeof( nPublished ) )
+                    _exit( 0 );
+            }
 
             ProcessPreSpawn();
 
@@ -354,6 +390,17 @@ namespace gamescope::Process
         // Parent Path
         // ...
 
+        if ( fnParentPostFork )
+        {
+            CloseFd( nParentReadyPipe[0] );
+            fnParentPostFork( nChild );
+
+            char nPublished = 1;
+            ssize_t sszRet = write( nParentReadyPipe[1], &nPublished, sizeof( nPublished ) );
+            (void) sszRet; // The child treats a failed publication as a failed launch.
+            CloseFd( nParentReadyPipe[1] );
+        }
+
         if ( bDoubleFork )
         {
             // Wait for the immediate child to exit, as all it does
@@ -379,7 +426,7 @@ namespace gamescope::Process
         }
     }
 
-    pid_t SpawnProcessInWatchdog( char **argv, bool bRespawn, std::function<void()> fnPreambleInChild )
+    pid_t SpawnProcessInWatchdog( char **argv, bool bRespawn, std::function<void()> fnPreambleInChild, ParentPostForkCallback fnParentPostFork )
     {
         std::vector<char *> args;
         args.push_back( (char *)"gamescopereaper" );
@@ -392,7 +439,7 @@ namespace gamescope::Process
             argv++;
         }
         args.push_back( NULL );
-        return SpawnProcess( args.data(), fnPreambleInChild );
+        return SpawnProcess( args.data(), fnPreambleInChild, false, fnParentPostFork );
     }
 
     bool HasCapSysNice()
