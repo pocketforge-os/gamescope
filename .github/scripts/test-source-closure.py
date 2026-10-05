@@ -55,7 +55,15 @@ def sha256(data: bytes) -> str:
 
 class SourceClosureTests(unittest.TestCase):
 	def test_test_registration_assertion(self) -> None:
-		names = ["gamescope:convar", "libdisplay-info:pocketforge-source-locator"]
+		gamescope_names = [
+			"gamescope:output-staging",
+			"gamescope:output-rotation",
+			"gamescope:output-rotation-vulkan",
+			"gamescope:output-staging-vulkan",
+			"gamescope:convar",
+			"gamescope:vulkan_present_features",
+		]
+		names = gamescope_names + ["libdisplay-info:pocketforge-source-locator"]
 		names.extend(f"libdisplay-info:fixture-{index}" for index in range(64))
 		names.extend(
 			[
@@ -76,14 +84,29 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		negative = subprocess.run(
+		self.assertIn("registered_gamescope=6", positive.stdout)
+		shrink_negative = subprocess.run(
 			[sys.executable, str(TEST_REGISTRATION)],
-			input=fixture.replace("gamescope:convar\n", ""),
+			input=fixture.replace("gamescope:output-staging\n", ""),
 			text=True,
 			capture_output=True,
 		)
-		self.assertNotEqual(negative.returncode, 0, negative.stdout)
-		self.assertIn("test registration count mismatch: gamescope", negative.stderr)
+		self.assertNotEqual(shrink_negative.returncode, 0, shrink_negative.stdout)
+		self.assertIn("test registration count mismatch: gamescope", shrink_negative.stderr)
+		substitution_negative = subprocess.run(
+			[sys.executable, str(TEST_REGISTRATION)],
+			input=fixture.replace(
+				"gamescope:output-staging\n",
+				"gamescope:substituted-test\n",
+			),
+			text=True,
+			capture_output=True,
+		)
+		self.assertNotEqual(substitution_negative.returncode, 0, substitution_negative.stdout)
+		self.assertIn(
+			"missing required registered test: gamescope:output-staging",
+			substitution_negative.stderr,
+		)
 
 	def setUp(self) -> None:
 		temp_parent = Path(os.environ.get("RUNNER_TEMP", ROOT / ".ci-cache"))

@@ -14,10 +14,12 @@
 #include <cassert>
 #include <cinttypes>
 #include <climits>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -288,10 +290,13 @@ namespace gamescope
 	public:
 		// Takes ownership of pPlane.
 		CDRMPlane( drmModePlane *pPlane );
+		~CDRMPlane();
 
 		void RefreshState();
 
 		drmModePlane *GetModePlane() const { return m_pPlane.get(); }
+		wlr_drm_format_set *GetFormats() { return &m_Formats; }
+		const wlr_drm_format_set *GetFormats() const { return &m_Formats; }
 
 		struct PlaneProperties
 		{
@@ -314,6 +319,7 @@ namespace gamescope
 			std::optional<CDRMAtomicProperty> CRTC_H;
 			std::optional<CDRMAtomicProperty> zpos;
 			std::optional<CDRMAtomicProperty> alpha;
+			std::optional<CDRMAtomicProperty> pixelBlendMode;
 			std::optional<CDRMAtomicProperty> rotation;
 			std::optional<CDRMAtomicProperty> COLOR_ENCODING;
 			std::optional<CDRMAtomicProperty> COLOR_RANGE;
@@ -333,6 +339,7 @@ namespace gamescope
 	private:
 		CAutoDeletePtr<drmModePlane> m_pPlane;
 		PlaneProperties m_Props;
+		wlr_drm_format_set m_Formats = {};
 	};
 
 	class CDRMCRTC final : public CDRMAtomicTypedObject<DRM_MODE_OBJECT_CRTC>
@@ -699,13 +706,15 @@ static bool get_plane_formats( struct drm_t *drm, gamescope::CDRMPlane *pPlane, 
 
 static uint32_t pick_plane_format( const struct wlr_drm_format_set *formats, uint32_t Xformat, uint32_t Aformat )
 {
-	const VkFormatFeatureFlags neededFeatures = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
 	uint32_t result = DRM_FORMAT_INVALID;
 	for ( size_t i = 0; i < formats->len; i++ ) {
-		uint32_t fmt = formats->formats[i].format;
+		const wlr_drm_format &planeFormat = formats->formats[i];
+		uint32_t fmt = planeFormat.format;
 
-		// Skip formats that we cannot use with the Vulkan device
-		if ( !vulkan_has_drm_modifiers_for_features( DRMFormatToVulkan(fmt, false), neededFeatures ) )
+		// Require one exact KMS/Vulkan modifier intersection, including either the
+		// combined compute usage or the same-format linear staging fallback.
+		if ( !vulkan_supports_output_format( fmt,
+			std::span<const uint64_t>{ planeFormat.modifiers, planeFormat.len } ) )
 			continue;
 
 		if ( fmt == Xformat ) {
@@ -1362,6 +1371,8 @@ bool init_drm(struct drm_t *drm, int width, int height, int refresh)
 	// Fetch formats which can be scanned out
 	for ( std::unique_ptr< gamescope::CDRMPlane > &pPlane : drm->planes )
 	{
+		if ( !get_plane_formats( drm, pPlane.get(), pPlane->GetFormats() ) )
+			return false;
 		if ( !get_plane_formats( drm, pPlane.get(), &drm->formats ) )
 			return false;
 	}
@@ -1940,7 +1951,7 @@ LiftoffStateCacheEntry FrameInfoToLiftoffStateCacheEntry( struct drm_t *drm, con
 		uint64_t crtcW = srcWidth / frameInfo->layers[ i ].scale.x;
 		uint64_t crtcH = srcHeight / frameInfo->layers[ i ].scale.y;
 
-		if (g_bRotated)
+		if ( g_bRotated && !frameInfo->isNativeOutput )
 		{
 			int64_t imageH = frameInfo->layers[ i ].tex->contentHeight() / frameInfo->layers[ i ].scale.y;
 
@@ -2086,6 +2097,11 @@ namespace gamescope
 		RefreshState();
 	}
 
+	CDRMPlane::~CDRMPlane()
+	{
+		wlr_drm_format_set_finish( &m_Formats );
+	}
+
 	void CDRMPlane::RefreshState()
 	{
 		auto rawProperties = GetRawProperties();
@@ -2107,6 +2123,7 @@ namespace gamescope
 			m_Props.CRTC_H                   = CDRMAtomicProperty::Instantiate( "CRTC_H",                   this, *rawProperties );
 			m_Props.zpos                     = CDRMAtomicProperty::Instantiate( "zpos",                     this, *rawProperties );
 			m_Props.alpha                    = CDRMAtomicProperty::Instantiate( "alpha",                    this, *rawProperties );
+			m_Props.pixelBlendMode           = CDRMAtomicProperty::Instantiate( "pixel blend mode",         this, *rawProperties );
 			m_Props.rotation                 = CDRMAtomicProperty::Instantiate( "rotation",                 this, *rawProperties );
 			m_Props.COLOR_ENCODING           = CDRMAtomicProperty::Instantiate( "COLOR_ENCODING",           this, *rawProperties );
 			m_Props.COLOR_RANGE              = CDRMAtomicProperty::Instantiate( "COLOR_RANGE",              this, *rawProperties );
@@ -2674,21 +2691,24 @@ drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, boo
 			liftoff_layer_set_property( drm->lo_layers[ i ], "SRC_H", entry.layerState[i].srcH );
 
 			uint64_t ulOrientation = DRM_MODE_ROTATE_0;
-			switch ( drm->pConnector->GetCurrentOrientation() )
+			if ( !frameInfo->isNativeOutput )
 			{
-			default:
-			case GAMESCOPE_PANEL_ORIENTATION_0:
-				ulOrientation = DRM_MODE_ROTATE_0;
-				break;
-			case GAMESCOPE_PANEL_ORIENTATION_270:
-				ulOrientation = DRM_MODE_ROTATE_270;
-				break;
-			case GAMESCOPE_PANEL_ORIENTATION_90:
-				ulOrientation = DRM_MODE_ROTATE_90;
-				break;
-			case GAMESCOPE_PANEL_ORIENTATION_180:
-				ulOrientation = DRM_MODE_ROTATE_180;
-				break;
+				switch ( drm->pConnector->GetCurrentOrientation() )
+				{
+				default:
+				case GAMESCOPE_PANEL_ORIENTATION_0:
+					ulOrientation = DRM_MODE_ROTATE_0;
+					break;
+				case GAMESCOPE_PANEL_ORIENTATION_270:
+					ulOrientation = DRM_MODE_ROTATE_270;
+					break;
+				case GAMESCOPE_PANEL_ORIENTATION_90:
+					ulOrientation = DRM_MODE_ROTATE_90;
+					break;
+				case GAMESCOPE_PANEL_ORIENTATION_180:
+					ulOrientation = DRM_MODE_ROTATE_180;
+					break;
+				}
 			}
 			liftoff_layer_set_property( drm->lo_layers[ i ], "rotation", ulOrientation );
 
@@ -3497,6 +3517,36 @@ bool drm_supports_color_mgmt(struct drm_t *drm)
 	return drm->pPrimaryPlane->GetProperties().AMD_PLANE_CTM.has_value() && drm->pPrimaryPlane->GetProperties().AMD_PLANE_BLEND_TF.has_value();
 }
 
+static const char *direct_scanout_rejection_name(
+	gamescope::output_rotation::DirectScanoutRejection rejection )
+{
+	using gamescope::output_rotation::DirectScanoutRejection;
+	switch ( rejection )
+	{
+		case DirectScanoutRejection::Accepted: return "accepted";
+		case DirectScanoutRejection::NoSoftwareRotation: return "software rotation inactive";
+		case DirectScanoutRejection::UnsupportedLayerCount: return "unsupported layer count";
+		case DirectScanoutRejection::UnclassifiedLayer: return "unclassified layer";
+		case DirectScanoutRejection::NotOpaqueBaseLayer: return "not an opaque base layer";
+		case DirectScanoutRejection::InvalidLogicalRectangle: return "invalid logical rectangle";
+		case DirectScanoutRejection::InvalidLayerOrder: return "invalid layer order";
+		case DirectScanoutRejection::NonNativeExtent: return "non-native buffer extent";
+		case DirectScanoutRejection::ContentExtentMismatch: return "content extent mismatch";
+		case DirectScanoutRejection::ClientTransformNotProven: return "client transform does not prove native orientation";
+		case DirectScanoutRejection::AmbiguousClientTransform: return "ambiguous or double client transform";
+		case DirectScanoutRejection::KmsTransformNotNormal: return "KMS transform is not normal";
+		case DirectScanoutRejection::IncompatibleFormat: return "incompatible plane format";
+		case DirectScanoutRejection::AmbiguousModifier: return "implicit or invalid modifier";
+		case DirectScanoutRejection::IncompatibleModifier: return "incompatible plane modifier";
+		case DirectScanoutRejection::FramebufferNotImportable: return "framebuffer import failed";
+		case DirectScanoutRejection::IncompatibleAlpha: return "incompatible plane alpha";
+		case DirectScanoutRejection::IncompatibleBlend: return "incompatible plane blend mode";
+		case DirectScanoutRejection::IncompatibleZpos: return "incompatible plane zpos";
+		case DirectScanoutRejection::AmbiguousBufferIdentity: return "ambiguous buffer identity";
+	}
+	return "unknown";
+}
+
 std::span<const uint32_t> drm_get_valid_refresh_rates( struct drm_t *drm )
 {
 	if ( drm && drm->pConnector )
@@ -3624,13 +3674,30 @@ namespace gamescope
 
 			bNeedsFullComposite |= !!(g_uCompositeDebug & CompositeDebugFlag::Heatmap);
 
+			FrameInfo_t nativeDirectFrameInfo = {};
+			const FrameInfo_t *pDirectFrameInfo = pFrameInfo;
+			if ( UsesVulkanOutputRotation() )
+			{
+				// Native direct presentation is bounded to a proven pre-rotated base
+				// and, optionally, one independently proven system overlay. Cursor,
+				// partial-composite, and unclassified layers stay composited.
+				bNeedsFullComposite |= bWantsPartialComposite;
+				if ( !bNeedsFullComposite )
+				{
+					if ( PrepareNativeDirectFrame( pFrameInfo, &nativeDirectFrameInfo ) )
+						pDirectFrameInfo = &nativeDirectFrameInfo;
+					else
+						bNeedsFullComposite = true;
+				}
+			}
+
 			bool bDoComposite = true;
 			if ( !bNeedsFullComposite && !bWantsPartialComposite )
 			{
 				// Save the pending mode so it can be restored after drm_rollback() and carried
 				// over to the composite path
 				std::shared_ptr<gamescope::BackendBlob> pPendingModeId = g_DRM.pending.mode_id;
-				int ret = drm_prepare( &g_DRM, bAsync, pFrameInfo );
+				int ret = drm_prepare( &g_DRM, bAsync, pDirectFrameInfo );
 				if ( ret == 0 )
 					bDoComposite = false;
 				else if ( ret == -EACCES )
@@ -3649,8 +3716,13 @@ namespace gamescope
 				m_bWasCompositing = false;
 				if ( pFrameInfo->layerCount == 2 )
 					m_nLastSingleOverlayZPos = pFrameInfo->layers[1].zpos;
+				const VulkanOutputCounters counters = vulkan_get_output_counters();
+				drm_log.debugf( "output path=direct composition_dispatches=%llu output_rotations=%llu staging_copies=%llu",
+					static_cast<unsigned long long>( counters.compositionDispatches ),
+					static_cast<unsigned long long>( counters.outputRotations ),
+					static_cast<unsigned long long>( counters.stagingCopies ) );
 
-				return Commit( pFrameInfo );
+				return Commit( pDirectFrameInfo );
 			}
 
 			// Composition Path
@@ -3730,10 +3802,17 @@ namespace gamescope
 				xwm_log.errorf("vulkan_composite failed");
 				return -EINVAL;
 			}
+			const VulkanOutputCounters counters = vulkan_get_output_counters();
+			drm_log.debugf( "output path=composited composition_dispatches=%llu output_rotations=%llu staging_copies=%llu",
+				static_cast<unsigned long long>( counters.compositionDispatches ),
+				static_cast<unsigned long long>( counters.outputRotations ),
+				static_cast<unsigned long long>( counters.stagingCopies ) );
 
 			vulkan_wait( *oCompositeResult, true );
 
 			FrameInfo_t presentCompFrameInfo = {};
+			presentCompFrameInfo.isNativeOutput =
+				g_output.outputTransform != output_rotation::Transform::Normal;
 			presentCompFrameInfo.allowVRR = pFrameInfo->allowVRR;
 			presentCompFrameInfo.outputEncodingEOTF = pFrameInfo->outputEncodingEOTF;
 
@@ -3823,6 +3902,13 @@ namespace gamescope
 
 			if ( ret != 0 )
 			{
+				if ( presentCompFrameInfo.isNativeOutput )
+				{
+					xwm_log.errorf( "Failed to prepare native software-rotated output: %s",
+						strerror( -ret ) );
+					return ret;
+				}
+
 				if ( g_DRM.current.mode_id == 0 )
 				{
 					xwm_log.errorf("We failed our modeset and have no mode to fall back to! (Initial modeset failed?): %s", strerror(-ret));
@@ -3911,6 +3997,15 @@ namespace gamescope
 
 			return std::span<const uint64_t>{ pFormat->modifiers, pFormat->modifiers + pFormat->len };
 		}
+		virtual std::span<const uint64_t> GetOutputModifiers( uint32_t uDrmFormat, bool bPartial ) const override
+		{
+			const wlr_drm_format_set *pFormats = bPartial ? &g_DRM.formats : &g_DRM.primary_formats;
+			const wlr_drm_format *pFormat = wlr_drm_format_set_get( pFormats, uDrmFormat );
+			if ( !pFormat )
+				return {};
+
+			return { pFormat->modifiers, pFormat->modifiers + pFormat->len };
+		}
 
 		virtual IBackendConnector *GetCurrentConnector() override
 		{
@@ -3943,6 +4038,18 @@ namespace gamescope
 		virtual bool SupportsTearing() const override
 		{
 			return g_bSupportsAsyncFlips;
+		}
+
+		virtual bool UsesVulkanOutputRotation() const override
+		{
+			if ( !g_DRM.pConnector || !g_DRM.pPrimaryPlane )
+				return false;
+
+			const output_rotation::Transform transform =
+				output_rotation::transformFromPanelOrientation(
+					g_DRM.pConnector->GetCurrentOrientation() );
+			return transform != output_rotation::Transform::Normal &&
+				!g_DRM.pPrimaryPlane->GetProperties().rotation.has_value();
 		}
 
 		virtual bool UsesVulkanSwapchain() const override
@@ -4024,6 +4131,217 @@ namespace gamescope
 		bool SupportsColorManagement() const
 		{
 			return drm_supports_color_mgmt( &g_DRM );
+		}
+
+		output_rotation::Transform OutputTransform() const
+		{
+			if ( !UsesVulkanOutputRotation() )
+				return output_rotation::Transform::Normal;
+			return output_rotation::transformFromPanelOrientation(
+				g_DRM.pConnector->GetCurrentOrientation() );
+		}
+
+		static output_rotation::ClientTransform EffectiveClientTransform(
+			const output_rotation::ClientTransformMetadata &metadata )
+		{
+			return metadata.clientClass == output_rotation::ClientClass::Xwayland
+				? metadata.vulkanPreTransform
+				: metadata.waylandBufferTransform;
+		}
+
+		static std::optional<output_rotation::Rect> LogicalLayerRect(
+			const FrameInfo_t::Layer_t &layer )
+		{
+			using namespace output_rotation;
+			if ( !layer.tex || !std::isfinite( layer.offset.x ) ||
+				!std::isfinite( layer.offset.y ) || !std::isfinite( layer.scale.x ) ||
+				!std::isfinite( layer.scale.y ) || layer.scale.x <= 0.0f ||
+				layer.scale.y <= 0.0f )
+				return std::nullopt;
+
+			Extent logicalSource = { layer.tex->width(), layer.tex->height() };
+			const ClientTransform transform = EffectiveClientTransform( layer.clientTransform );
+			if ( transform == ClientTransform::Rotate90 ||
+				transform == ClientTransform::Rotate270 )
+				std::swap( logicalSource.width, logicalSource.height );
+
+			const double values[] = {
+				-layer.offset.x,
+				-layer.offset.y,
+				logicalSource.width / double( layer.scale.x ),
+				logicalSource.height / double( layer.scale.y ),
+			};
+			uint32_t integerValues[4] = {};
+			for ( size_t i = 0; i < std::size( values ); i++ )
+			{
+				const double rounded = std::round( values[i] );
+				if ( !std::isfinite( values[i] ) || values[i] < 0.0 ||
+					std::fabs( values[i] - rounded ) > 0.0001 ||
+					rounded > std::numeric_limits<uint32_t>::max() )
+					return std::nullopt;
+				integerValues[i] = uint32_t( rounded );
+			}
+
+			return Rect{
+				integerValues[0], integerValues[1],
+				integerValues[2], integerValues[3],
+			};
+		}
+
+		struct OverlayPlaneSupport
+		{
+			bool format = false;
+			bool modifier = false;
+			bool properties = false;
+		};
+
+		static OverlayPlaneSupport NativeOverlayPlaneSupport(
+			uint32_t drmFormat, uint64_t modifier )
+		{
+			OverlayPlaneSupport result;
+			if ( !g_DRM.pCRTC )
+				return result;
+
+			for ( const std::unique_ptr<CDRMPlane> &plane : g_DRM.planes )
+			{
+				if ( !( plane->GetModePlane()->possible_crtcs & g_DRM.pCRTC->GetCRTCMask() ) ||
+					!plane->GetProperties().type ||
+					plane->GetProperties().type->GetCurrentValue() != DRM_PLANE_TYPE_OVERLAY )
+					continue;
+
+				const wlr_drm_format *format = wlr_drm_format_set_get(
+					plane->GetFormats(), drmFormat );
+				if ( !format )
+					continue;
+				result.format = true;
+				const std::span<const uint64_t> modifiers = {
+					format->modifiers, format->modifiers + format->len,
+				};
+				if ( !Algorithm::Contains( modifiers, modifier ) )
+					continue;
+				result.modifier = true;
+
+				const CDRMPlane::PlaneProperties &properties = plane->GetProperties();
+				if ( properties.alpha && properties.pixelBlendMode && properties.zpos )
+					result.properties = true;
+			}
+			return result;
+		}
+
+		static output_rotation::PlaneBlendMode NativeBlendMode(
+			const FrameInfo_t::Layer_t &layer )
+		{
+			using output_rotation::PlaneBlendMode;
+			if ( layer.nativePlaneRole == output_rotation::LayerRole::Base )
+				return PlaneBlendMode::Opaque;
+			switch ( layer.eAlphaBlendingMode )
+			{
+				case ALPHA_BLENDING_MODE_PREMULTIPLIED:
+					return PlaneBlendMode::Premultiplied;
+				case ALPHA_BLENDING_MODE_COVERAGE:
+					return PlaneBlendMode::Coverage;
+				default:
+					return PlaneBlendMode::Unsupported;
+			}
+		}
+
+		bool PrepareNativeDirectFrame( const FrameInfo_t *pFrameInfo,
+			FrameInfo_t *pNativeFrameInfo ) const
+		{
+			using namespace output_rotation;
+			const Transform outputTransform = OutputTransform();
+			DirectScanoutInput input = {
+				.outputTransform = outputTransform,
+				.logicalExtent = { uint32_t( g_nOutputWidth ), uint32_t( g_nOutputHeight ) },
+				.layerCount = uint32_t( pFrameInfo->layerCount ),
+				.normalKmsTransform = true,
+			};
+
+			if ( input.layerCount <= MaxNativeDirectLayers )
+			{
+				for ( uint32_t i = 0; i < input.layerCount; i++ )
+				{
+					const FrameInfo_t::Layer_t &layer = pFrameInfo->layers[i];
+					const uint32_t drmFormat = layer.tex
+						? layer.tex->drmFormat()
+						: DRM_FORMAT_INVALID;
+					const bool hasDmaBuf = layer.tex && layer.tex->dmabuf().n_planes > 0;
+					const uint64_t modifier = layer.tex
+						? layer.tex->dmabuf().modifier
+						: DRM_FORMAT_MOD_INVALID;
+					const bool framebufferImportable = layer.tex && layer.tex->GetBackendFb() &&
+						layer.tex->GetBackendFb()->EnsureImported();
+					const std::optional<Rect> logicalRect = LogicalLayerRect( layer );
+
+					bool formatCompatible = false;
+					bool modifierCompatible = false;
+					bool overlayProperties = true;
+					if ( i == 0 )
+					{
+						const std::span<const uint64_t> primaryModifiers =
+							GetOutputModifiers( drmFormat, false );
+						formatCompatible = !primaryModifiers.empty();
+						modifierCompatible = Algorithm::Contains( primaryModifiers, modifier );
+					}
+					else
+					{
+						const OverlayPlaneSupport support = NativeOverlayPlaneSupport(
+							drmFormat, modifier );
+						formatCompatible = support.format;
+						modifierCompatible = support.modifier;
+						overlayProperties = support.properties;
+					}
+
+					input.layers[i] = {
+						.bufferIdentity = uint64_t( reinterpret_cast<uintptr_t>( layer.tex.get() ) ),
+						.role = layer.nativePlaneRole,
+						.bufferExtent = layer.tex
+							? Extent{ layer.tex->width(), layer.tex->height() }
+							: Extent{},
+						.contentExtent = layer.tex
+							? Extent{ layer.tex->contentWidth(), layer.tex->contentHeight() }
+							: Extent{},
+						.logicalRect = logicalRect.value_or( Rect{} ),
+						.client = layer.clientTransform,
+						.zpos = layer.zpos,
+						.opacity = layer.opacity,
+						.blendMode = NativeBlendMode( layer ),
+						.formatCompatible = formatCompatible,
+						.explicitModifier = hasDmaBuf && modifier != DRM_FORMAT_MOD_INVALID,
+						.modifierCompatible = modifierCompatible,
+						.framebufferImportable = framebufferImportable,
+						.alphaCompatible = overlayProperties,
+						.blendCompatible = overlayProperties,
+						.zposCompatible = overlayProperties,
+					};
+				}
+			}
+
+			const DirectScanoutDecision decision = directScanoutDecision( input );
+			if ( !decision.eligible )
+			{
+				drm_log.debugf( "native direct scanout rejected: %s",
+					direct_scanout_rejection_name( decision.rejection ) );
+				return false;
+			}
+
+			*pNativeFrameInfo = *pFrameInfo;
+			pNativeFrameInfo->isNativeOutput = true;
+			for ( uint32_t i = 0; i < decision.recordCount; i++ )
+			{
+				const NativePlaneRecord &record = decision.records[i];
+				FrameInfo_t::Layer_t &layer = pNativeFrameInfo->layers[i];
+				layer.offset = {
+					-float( record.destinationRect.x ),
+					-float( record.destinationRect.y ),
+				};
+				layer.scale = {
+					record.sourceRect.width / float( record.destinationRect.width ),
+					record.sourceRect.height / float( record.destinationRect.height ),
+				};
+				layer.blackBorder = false;
+			}
+			return true;
 		}
 
 		int Commit( const FrameInfo_t *pFrameInfo )
@@ -4159,4 +4477,3 @@ int HackyDRMPresent( const FrameInfo_t *pFrameInfo, bool bAsync )
 {
 	return static_cast<gamescope::CDRMBackend *>( GetBackend() )->Present( pFrameInfo, bAsync );
 }
-

@@ -150,6 +150,15 @@ vec4 sampleLayerEx(sampler2D layerSampler, uint offsetLayerIdx, uint colorspaceL
     vec2 coord = ((uv + u_offset[offsetLayerIdx]) * u_scale[offsetLayerIdx]);
     vec2 texSize = textureSize(layerSampler, 0);
 
+    // Two bits per layer: 0 normal, 1 clockwise 90, 2 counter-clockwise 90.
+    // Coordinates are pixel centers, hence the continuous size-coordinate
+    // form rather than the integer size-1-index form.
+    uint bufferTransform = bitfieldExtract(u_bufferTransform, int(offsetLayerIdx) * 2, 2);
+    if (bufferTransform == 1)
+        coord = vec2(texSize.x - coord.y, coord.x);
+    else if (bufferTransform == 2)
+        coord = vec2(coord.y, texSize.y - coord.x);
+
     if (coord.x < 0.0f       || coord.y < 0.0f ||
         coord.x >= texSize.x || coord.y >= texSize.y) {
         float border = (u_borderMask & (1u << offsetLayerIdx)) != 0 ? 1.0f : 0.0f;

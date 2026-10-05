@@ -131,6 +131,43 @@ std::vector<ResListEntry_t>& gamescope_xwayland_server_t::retrieve_commits()
 
 gamescope::ConVar<bool> cv_drm_debug_syncobj_force_wait_on_commit( "drm_debug_syncobj_force_wait_on_commit", false, "Force a wait on DRM sync objects before committing buffers" );
 
+static gamescope::output_rotation::ClientTransform normalize_wayland_buffer_transform(
+	enum wl_output_transform transform )
+{
+	using gamescope::output_rotation::ClientTransform;
+	switch ( transform )
+	{
+		case WL_OUTPUT_TRANSFORM_NORMAL:
+			return ClientTransform::Normal;
+		case WL_OUTPUT_TRANSFORM_90:
+			return ClientTransform::Rotate90;
+		case WL_OUTPUT_TRANSFORM_270:
+			return ClientTransform::Rotate270;
+		default:
+			return ClientTransform::Unsupported;
+	}
+}
+
+static gamescope::output_rotation::ClientTransform normalize_vulkan_pre_transform(
+	const std::shared_ptr<wlserver_vk_swapchain_feedback> &feedback )
+{
+	using gamescope::output_rotation::ClientTransform;
+	if ( !feedback )
+		return ClientTransform::Unknown;
+
+	switch ( feedback->vk_pre_transform )
+	{
+		case VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:
+			return ClientTransform::Normal;
+		case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:
+			return ClientTransform::Rotate90;
+		case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR:
+			return ClientTransform::Rotate270;
+		default:
+			return ClientTransform::Unsupported;
+	}
+}
+
 std::optional<ResListEntry_t> PrepareCommit( struct wlr_surface *surf, struct wlr_buffer *buf )
 {
 	auto wl_surf = get_wl_surface_info( surf );
@@ -160,6 +197,13 @@ std::optional<ResListEntry_t> PrepareCommit( struct wlr_surface *surf, struct wl
 		wlserver_surface_is_async(surf),
 		wlserver_surface_is_fifo(surf),
 		pFeedback,
+		gamescope::output_rotation::ClientTransformMetadata{
+			.clientClass = wl_surf->x11_surface
+				? gamescope::output_rotation::ClientClass::Xwayland
+				: gamescope::output_rotation::ClientClass::Wayland,
+			.waylandBufferTransform = normalize_wayland_buffer_transform( surf->current.transform ),
+			.vulkanPreTransform = normalize_vulkan_pre_transform( pFeedback ),
+		},
 		std::move(wl_surf->pending_presentation_feedbacks),
 		wl_surf->present_id,
 		wl_surf->desired_present_time,

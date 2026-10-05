@@ -17,6 +17,8 @@
 
 #include "gamescope_shared.h"
 #include "backend.h"
+#include "output_rotation.hpp"
+#include "output_staging.hpp"
 
 #include "shaders/descriptor_set_constants.h"
 
@@ -158,7 +160,7 @@ public:
 		VkImageType imageType;
 	};
 
-	bool BInit( uint32_t width, uint32_t height, uint32_t depth, uint32_t drmFormat, createFlags flags, wlr_dmabuf_attributes *pDMA = nullptr, uint32_t contentWidth = 0, uint32_t contentHeight = 0, CVulkanTexture *pExistingImageToReuseMemory = nullptr, gamescope::OwningRc<gamescope::IBackendFb> pBackendFb = nullptr );
+	bool BInit( uint32_t width, uint32_t height, uint32_t depth, uint32_t drmFormat, createFlags flags, wlr_dmabuf_attributes *pDMA = nullptr, uint32_t contentWidth = 0, uint32_t contentHeight = 0, CVulkanTexture *pExistingImageToReuseMemory = nullptr, gamescope::OwningRc<gamescope::IBackendFb> pBackendFb = nullptr, std::span<const uint64_t> allowedModifiers = {} );
 	bool BInitFromSwapchain( VkImage image, uint32_t width, uint32_t height, VkFormat format );
 
 	uint32_t IncRef();
@@ -184,6 +186,7 @@ public:
 	inline VkImage vkImage() { return m_vkImage; }
 	inline bool outputImage() { return m_bOutputImage; }
 	inline bool externalImage() { return m_bExternal; }
+	inline bool importedImage() { return m_bImported; }
 	inline VkDeviceSize totalSize() const { return m_size; }
 	inline uint32_t drmFormat() const { return m_drmFormat; }
 
@@ -210,6 +213,7 @@ public:
 private:
 	bool m_bInitialized = false;
 	bool m_bExternal = false;
+	bool m_bImported = false;
 	bool m_bOutputImage = false;
 
 	uint32_t m_drmFormat = DRM_FORMAT_INVALID;
@@ -280,6 +284,9 @@ enum AlphaBlendingMode_t
 
 struct FrameInfo_t
 {
+	// The final buffer is already in the physical KMS coordinate space and
+	// must be presented with a normal plane transform.
+	bool isNativeOutput = false;
 	bool useFSRLayer0;
 	bool useNISLayer0;
 	bool bFadingOut;
@@ -315,6 +322,11 @@ struct FrameInfo_t
 		std::shared_ptr<gamescope::BackendBlob> hdr_metadata_blob;
 
 		GamescopeAppTextureColorspace colorspace;
+
+		// Commit-snapshotted evidence for the narrow native-plane exception.
+		// Unknown/unclassified layers always fall back to composition.
+		gamescope::output_rotation::ClientTransformMetadata clientTransform = {};
+		gamescope::output_rotation::LayerRole nativePlaneRole = gamescope::output_rotation::LayerRole::Unknown;
 
 		bool isYcbcr() const
 		{
@@ -535,6 +547,14 @@ struct VulkanOutput_t
 	uint32_t nOutImage; // swapchain index in nested mode, or ping/pong between two RTs
 	std::vector<gamescope::OwningRc<CVulkanTexture>> outputImages;
 	std::vector<gamescope::OwningRc<CVulkanTexture>> outputImagesPartialOverlay;
+	std::vector<gamescope::OwningRc<CVulkanTexture>> outputCompositionImages;
+	std::vector<gamescope::OwningRc<CVulkanTexture>> outputCompositionImagesPartialOverlay;
+	std::vector<gamescope::OwningRc<CVulkanTexture>> outputRotationImages;
+	std::vector<gamescope::OwningRc<CVulkanTexture>> outputRotationImagesPartialOverlay;
+	gamescope::output_staging::OutputMode outputMode = gamescope::output_staging::OutputMode::Unsupported;
+	gamescope::output_staging::OutputMode outputModePartialOverlay = gamescope::output_staging::OutputMode::Unsupported;
+	gamescope::output_rotation::Transform outputTransform = gamescope::output_rotation::Transform::Normal;
+	gamescope::output_rotation::Transform outputTransformPartialOverlay = gamescope::output_rotation::Transform::Normal;
 	gamescope::OwningRc<CVulkanTexture> temporaryHackyBlankImage;
 
 	uint32_t uOutputFormat = DRM_FORMAT_INVALID;
@@ -561,6 +581,7 @@ enum ShaderType {
 	SHADER_TYPE_RCAS,
 	SHADER_TYPE_NIS,
 	SHADER_TYPE_RGB_TO_NV12,
+	SHADER_TYPE_OUTPUT_ROTATE,
 
 	SHADER_TYPE_COUNT
 };
@@ -1009,5 +1030,15 @@ void vulkan_wait_idle();
 bool vulkan_has_drm_props();
 
 bool vulkan_has_drm_modifiers_for_features(VkFormat format, VkFormatFeatureFlags features);
+bool vulkan_supports_output_format( uint32_t drmFormat, std::span<const uint64_t> kmsModifiers );
+
+struct VulkanOutputCounters
+{
+	uint64_t compositionDispatches;
+	uint64_t outputRotations;
+	uint64_t stagingCopies;
+};
+
+VulkanOutputCounters vulkan_get_output_counters();
 
 extern CVulkanDevice g_device;

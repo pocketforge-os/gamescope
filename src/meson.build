@@ -70,6 +70,7 @@ shader_src = [
   'shaders/cs_nis.comp',
   'shaders/cs_nis_fp16.comp',
   'shaders/cs_rgb_to_nv12.comp',
+  'shaders/cs_output_rotate.comp',
 ]
 
 spirv_shaders = glsl_generator.process(shader_src)
@@ -113,6 +114,8 @@ src = [
   'wlserver.cpp',
   'vblankmanager.cpp',
   'rendervulkan.cpp',
+  'output_staging.cpp',
+  'output_rotation.cpp',
   'log.cpp',
   'ime.cpp',
   'mangoapp.cpp',
