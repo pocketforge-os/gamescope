@@ -16,6 +16,13 @@ test_output_rotation = executable(
 )
 test('output-rotation', test_output_rotation)
 
+test_system_overlay_auth = executable(
+	'test_system_overlay_auth',
+	[srcdir / 'system_overlay_auth.cpp', 'test_system_overlay_auth.cpp'],
+	include_directories: [srcdir],
+)
+test('system-overlay-auth', test_system_overlay_auth)
+
 test_output_rotation_vulkan = executable(
 	'test_output_rotation_vulkan',
 	[spirv_shaders, 'test_output_rotation_vulkan.cpp'],

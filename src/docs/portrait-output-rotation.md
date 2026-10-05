@@ -89,9 +89,11 @@ system overlay. Every admitted layer must have:
 The base must remain opaque at zpos zero and cover the complete logical output.
 The optional overlay must be compositor-classified, have a distinct buffer
 identity and higher zpos, and use a supported nonzero opacity and premultiplied
-or coverage blend mode. The layer-shell global is exposed only to the
-compositor-launched `mangoapp` peer, and that peer's surface is marked as
-trusted for native-plane admission. Xwayland's legacy
+or coverage blend mode. The layer-shell global is exposed only to the peer
+whose Wayland credentials have the immediate parent PID of the compositor-
+registered `mangoapp` reaper. Process names are not used for admission, so a
+process that spoofs or later mutates its name cannot receive native-plane
+trust. Xwayland's legacy
 `GAMESCOPE_EXTERNAL_OVERLAY` property remains a composition classification
 only; it cannot grant native-plane trust. A candidate DRM overlay plane must
 support the exact format/modifier and expose alpha, pixel-blend-mode, and zpos
