@@ -104,6 +104,21 @@ class SourceClosureTests(unittest.TestCase):
 			"child licence\n",
 			gitlink=("deps/grandchild", self.grandchild),
 		)
+		self.extra_gitlink = self.make_project(
+			"extra-gitlink",
+			"extra gitlink licence\n",
+			gitlinks=[
+				("deps/grandchild", self.grandchild),
+				("deps/unlisted", self.grandchild),
+			],
+			module_paths={"deps/grandchild"},
+		)
+		self.no_modules_gitlink = self.make_project(
+			"no-modules-gitlink",
+			"no modules gitlink licence\n",
+			gitlinks=[("deps/unlisted", self.grandchild)],
+			module_paths=set(),
+		)
 		self.wrapped = self.make_project("wrapped", "wrapped licence\n")
 		self.snapshot = self.make_project(
 			"snapshot",
@@ -114,6 +129,9 @@ class SourceClosureTests(unittest.TestCase):
 		(self.root / ".gitmodules").write_text(
 			"[submodule \"deps/child\"]\n"
 			"\tpath = deps/child\n"
+			"\turl = https://github.com/pocketforge-os/child.git\n"
+			"[submodule \"deps/child-second\"]\n"
+			"\tpath = deps/child-second\n"
 			"\turl = https://github.com/pocketforge-os/child.git\n",
 			encoding="utf-8",
 		)
@@ -152,6 +170,16 @@ class SourceClosureTests(unittest.TestCase):
 			"deps/child",
 			cwd=self.root,
 		)
+		run(
+			"git",
+			"update-index",
+			"--add",
+			"--cacheinfo",
+			"160000",
+			self.child["commit"],
+			"deps/child-second",
+			cwd=self.root,
+		)
 		run("git", "commit", "-qm", "fixture root", cwd=self.root)
 
 		self.manifest = self.root / ".github" / "pocketforge-source-closure.tsv"
@@ -169,6 +197,22 @@ class SourceClosureTests(unittest.TestCase):
 				"child",
 				"grandchild",
 				"deps/child/deps/grandchild",
+				"gitlink",
+				self.grandchild,
+			),
+			self.row(
+				"child-second",
+				"gamescope",
+				"child",
+				"deps/child-second",
+				"gitlink",
+				self.child,
+			),
+			self.row(
+				"grandchild-second",
+				"child",
+				"grandchild",
+				"deps/child-second/deps/grandchild",
 				"gitlink",
 				self.grandchild,
 			),
@@ -207,8 +251,18 @@ class SourceClosureTests(unittest.TestCase):
 		license_text: str,
 		*,
 		gitlink: tuple[str, dict[str, str]] | None = None,
+		gitlinks: list[tuple[str, dict[str, str]]] | None = None,
+		module_paths: set[str] | None = None,
 		extra_files: dict[str, bytes] | None = None,
 	) -> dict[str, str]:
+		if gitlink is not None:
+			if gitlinks is not None:
+				raise ValueError("gitlink and gitlinks are mutually exclusive")
+			gitlinks = [gitlink]
+		gitlinks = gitlinks or []
+		if module_paths is None:
+			module_paths = {path for path, _child in gitlinks}
+
 		work = self.base / f"{name}-work"
 		work.mkdir()
 		run("git", "init", "-q", cwd=work)
@@ -219,17 +273,19 @@ class SourceClosureTests(unittest.TestCase):
 			target = work / path
 			target.parent.mkdir(parents=True, exist_ok=True)
 			target.write_bytes(data)
-		if gitlink is not None:
-			path, child = gitlink
+		if module_paths:
+			by_path = dict(gitlinks)
 			(work / ".gitmodules").write_text(
-				f"[submodule \"{path}\"]\n"
-				f"\tpath = {path}\n"
-				f"\turl = https://github.com/pocketforge-os/{child['name']}.git\n",
+				"".join(
+					f"[submodule \"{path}\"]\n"
+					f"\tpath = {path}\n"
+					f"\turl = https://github.com/pocketforge-os/{by_path[path]['name']}.git\n"
+					for path in sorted(module_paths)
+				),
 				encoding="utf-8",
 			)
 		run("git", "add", ".", cwd=work)
-		if gitlink is not None:
-			path, child = gitlink
+		for path, child in gitlinks:
 			run(
 				"git",
 				"update-index",
@@ -332,10 +388,56 @@ class SourceClosureTests(unittest.TestCase):
 		self.assertNotEqual(result.returncode, 0, result.stdout)
 		self.assertIn(fragment, result.stderr)
 
+	def assert_recursive_gitlink_drift_rejected(
+		self,
+		project: dict[str, str],
+		*,
+		declared_child: bool,
+		expected_path: str,
+	) -> None:
+		project_id = project["name"]
+		wrap_path = self.root / "subprojects" / f"{project_id}.wrap"
+		wrap_path.write_text(
+			"[wrap-git]\n"
+			f"url = https://github.com/pocketforge-os/{project_id}.git\n"
+			f"revision = {project['commit']}\n",
+			encoding="utf-8",
+		)
+		rows = [row.copy() for row in self.rows]
+		rows.append(
+			self.row(
+				project_id,
+				"gamescope",
+				project_id,
+				f"subprojects/{project_id}.wrap",
+				"wrap-git",
+				project,
+			)
+		)
+		if declared_child:
+			rows.append(
+				self.row(
+					f"{project_id}-grandchild",
+					project_id,
+					"grandchild",
+					f"subprojects/{project_id}/deps/grandchild",
+					"gitlink",
+					self.grandchild,
+				)
+			)
+		manifest = self.write_manifest(rows, self.base / f"{project_id}-drift.tsv")
+		try:
+			self.assert_rejected(
+				f"recursive gitlink/.gitmodules drift: {project_id}:{expected_path}",
+				manifest,
+			)
+		finally:
+			wrap_path.unlink()
+
 	def test_positive_and_negative_controls(self) -> None:
 		positive = self.invoke()
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		self.assertIn("validated_edges=4", positive.stdout)
+		self.assertIn("validated_edges=6", positive.stdout)
 
 		admission_receipt = self.base / "admission.json"
 		admission = subprocess.run(
@@ -384,9 +486,14 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(materialization.returncode, 0, materialization.stderr)
-		self.assertIn("materialized_git_inputs=3", materialization.stdout)
+		self.assertIn("materialized_git_inputs=5", materialization.stdout)
+		self.assertIn("verified_materialized_locator_targets=5", materialization.stdout)
 		self.assertTrue((materialized / "deps" / "child" / "LICENSE").is_file())
 		self.assertTrue((materialized / "deps" / "child" / "deps" / "grandchild" / "LICENSE").is_file())
+		self.assertTrue((materialized / "deps" / "child-second" / "LICENSE").is_file())
+		self.assertTrue(
+			(materialized / "deps" / "child-second" / "deps" / "grandchild" / "LICENSE").is_file()
+		)
 		self.assertTrue((materialized / "subprojects" / "wrapped" / "LICENSE").is_file())
 		self.assertTrue(materialization_receipt.is_file())
 
@@ -442,7 +549,31 @@ class SourceClosureTests(unittest.TestCase):
 
 		recursive_rows = [row for row in self.rows if row["edge_id"] != "grandchild"]
 		recursive_manifest = self.write_manifest(recursive_rows, self.base / "recursive-drift.tsv")
-		self.assert_rejected("unlisted dependency edge: child:deps/grandchild", recursive_manifest)
+		self.assert_rejected(
+			"unlisted dependency edge: child:deps/child/deps/grandchild",
+			recursive_manifest,
+		)
+
+		second_recursive_rows = [row for row in self.rows if row["edge_id"] != "grandchild-second"]
+		second_recursive_manifest = self.write_manifest(
+			second_recursive_rows,
+			self.base / "recursive-second-drift.tsv",
+		)
+		self.assert_rejected(
+			"unlisted dependency edge: child:deps/child-second/deps/grandchild",
+			second_recursive_manifest,
+		)
+
+		for project, declared_child, expected_path in (
+			(self.extra_gitlink, True, "subprojects/extra-gitlink/deps/unlisted"),
+			(self.no_modules_gitlink, False, "subprojects/no-modules-gitlink/deps/unlisted"),
+		):
+			with self.subTest(reverse_gitlink_drift=project["name"]):
+				self.assert_recursive_gitlink_drift_rejected(
+					project,
+					declared_child=declared_child,
+					expected_path=expected_path,
+				)
 
 		extra_rows = [row.copy() for row in self.rows]
 		ghost = self.rows[0].copy()

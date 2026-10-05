@@ -51,6 +51,11 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, pf-public-ci]
     container: archlinux:base-devel
+    env:
+      MESON_SOURCE_CACHE_ROOT: ${{ github.workspace }}/.ci-source-closure/${{ github.run_id }}/${{ github.run_attempt }}/native-tests/cache
+      MATERIALIZED_SOURCE_ROOT: ${{ github.workspace }}/.ci-source-closure/${{ github.run_id }}/${{ github.run_attempt }}/native-tests/source
+      MATERIALIZATION_RECEIPT: ${{ github.workspace }}/.ci-source-closure/${{ github.run_id }}/${{ github.run_attempt }}/native-tests/materialization-receipt.json
+      MISSING_SOURCE_ROOT: ${{ github.workspace }}/.ci-source-closure/${{ github.run_id }}/${{ github.run_attempt }}/native-tests/missing-source
     steps:
       - name: Prepare build environment
         run: |
@@ -64,79 +69,106 @@ jobs:
             xcb-util-wm xcb-util-renderutil xcb-util-errors \
             luajit catch2
 
-      - name: Check out the tested revision and exact submodules
+      - name: Check out the tested public revision
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          submodules: recursive
+          persist-credentials: false
+          submodules: false
 
       - name: Configure Git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Verify exact submodule checkout
+      - name: Admit and materialize the controlled source closure
         shell: bash
-        run: |
-          set -euo pipefail
-          state="$(git submodule status --recursive)"
-          printf '%s\n' "$state"
-          if grep -Eq '^[+-U]' <<<"$state"; then
-            echo 'submodule checkout does not match the recorded gitlinks' >&2
-            exit 1
-          fi
-
-      - name: Prime and verify immutable Meson sources
-        shell: bash
-        env:
-          MESON_SOURCE_CACHE_ROOT: ${{ runner.temp }}/gamescope-meson-source-cache/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}
         run: |
           set -euo pipefail
           cold_result="$(.github/scripts/prime-meson-sources.sh)"
           printf '%s\n' "$cold_result"
           grep -Fx 'cache_result=cold' <<<"$cold_result"
+          grep -Fx 'validated_edges=34' <<<"$cold_result"
+          grep -Fx 'verified_sources=32' <<<"$cold_result"
 
           warm_result="$(PF_MESON_CACHE_OFFLINE=1 .github/scripts/prime-meson-sources.sh)"
           printf '%s\n' "$warm_result"
           grep -Fx 'cache_result=warm' <<<"$warm_result"
+          grep -Fx 'validated_edges=34' <<<"$warm_result"
+          grep -Fx 'verified_sources=32' <<<"$warm_result"
 
+          manifest_sha="$(sha256sum .github/pocketforge-source-closure.tsv | awk '{print $1}')"
+          admission_receipt="$MESON_SOURCE_CACHE_ROOT/$manifest_sha/admission-receipt.json"
+          test -f "$admission_receipt"
+          sha256sum \
+            .github/pocketforge-source-closure.tsv \
+            .github/vendored-sources.tsv \
+            "$admission_receipt"
+
+          python3 .github/scripts/materialize-source-closure.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --manifest "$GITHUB_WORKSPACE/.github/pocketforge-source-closure.tsv" \
+            --vendored-registry "$GITHUB_WORKSPACE/.github/vendored-sources.tsv" \
+            --cache-root "$MESON_SOURCE_CACHE_ROOT/$manifest_sha" \
+            --output "$MATERIALIZED_SOURCE_ROOT" \
+            --receipt "$MATERIALIZATION_RECEIPT"
+          sha256sum "$MATERIALIZATION_RECEIPT"
+
+          python3 .github/scripts/materialize-source-closure.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --manifest "$GITHUB_WORKSPACE/.github/pocketforge-source-closure.tsv" \
+            --vendored-registry "$GITHUB_WORKSPACE/.github/vendored-sources.tsv" \
+            --cache-root "$MESON_SOURCE_CACHE_ROOT/$manifest_sha" \
+            --output "$MISSING_SOURCE_ROOT" \
+            --receipt "${MATERIALIZATION_RECEIPT%.json}-missing.json"
+
+      - name: Prove incomplete admission and materialization fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_sha="$(sha256sum .github/pocketforge-source-closure.tsv | awk '{print $1}')"
+          missing_cache_root="${MESON_SOURCE_CACHE_ROOT}-missing"
+          corrupt_cache_root="${MESON_SOURCE_CACHE_ROOT}-corrupt"
+          install -d "$missing_cache_root/$manifest_sha" "$corrupt_cache_root/$manifest_sha"
+          cp -a "$MESON_SOURCE_CACHE_ROOT/$manifest_sha/." "$missing_cache_root/$manifest_sha/"
+          cp -a "$MESON_SOURCE_CACHE_ROOT/$manifest_sha/." "$corrupt_cache_root/$manifest_sha/"
+
+          missing_repo="$missing_cache_root/$manifest_sha/repos/glm.git"
+          test -d "$missing_repo"
+          find "$missing_repo" -mindepth 1 -delete
+          rmdir "$missing_repo"
           if PF_MESON_CACHE_OFFLINE=1 \
-            MESON_SOURCE_CACHE_ROOT="${MESON_SOURCE_CACHE_ROOT}-missing" \
+            MESON_SOURCE_CACHE_ROOT="$missing_cache_root" \
             .github/scripts/prime-meson-sources.sh; then
             echo 'an incomplete offline cache was accepted' >&2
             exit 1
           fi
 
-          manifest_key="$(sha256sum .github/meson-sources.lock | awk '{print $1}')"
-          corrupt_root="${MESON_SOURCE_CACHE_ROOT}-corrupt"
-          install -d "$corrupt_root/$manifest_key"
-          cp -a "$MESON_SOURCE_CACHE_ROOT/$manifest_key/." "$corrupt_root/$manifest_key/"
-          corrupt_archive="$(awk -F '\t' '$1 == "glm" { print $4 }' .github/meson-sources.lock)"
-          printf 'corrupt\n' > "$corrupt_root/$manifest_key/$corrupt_archive"
+          corrupt_repo="$corrupt_cache_root/$manifest_sha/repos/glm.git"
+          test -d "$corrupt_repo"
+          python3 - "$corrupt_repo" <<'PY'
+          import pathlib
+          import sys
+
+          objects = [path for path in (pathlib.Path(sys.argv[1]) / "objects").rglob("*") if path.is_file()]
+          if not objects:
+              raise SystemExit("no Git objects available to corrupt")
+          for path in objects:
+              path.chmod(path.stat().st_mode | 0o200)
+              path.write_bytes(b"corrupt\n")
+          PY
           if PF_MESON_CACHE_OFFLINE=1 \
-            MESON_SOURCE_CACHE_ROOT="$corrupt_root" \
+            MESON_SOURCE_CACHE_ROOT="$corrupt_cache_root" \
             .github/scripts/prime-meson-sources.sh; then
-            echo 'a hash-mismatched offline cache was accepted' >&2
+            echo 'a corrupted offline cache was accepted' >&2
             exit 1
           fi
 
-      - name: Prove a missing wrap blocks Meson
+      - name: Prove a missing materialized source blocks Meson
         shell: bash
-        env:
-          MESON_SOURCE_CACHE_ROOT: ${{ runner.temp }}/gamescope-meson-source-cache/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}
+        working-directory: ${{ env.MISSING_SOURCE_ROOT }}
         run: |
           set -euo pipefail
-          glm_archive="$(awk -F '\t' '$1 == "glm" { print $4 }' .github/meson-sources.lock)"
-          glm_root="$(awk -F '\t' '$1 == "glm" { print $5 }' .github/meson-sources.lock)"
-          if [[ -z "$glm_archive" || -z "$glm_root" || "$glm_archive" == */* || "$glm_root" == */* ]]; then
-            echo 'unsafe or missing glm manifest entry' >&2
-            exit 1
-          fi
-
-          rm -f "subprojects/packagecache/$glm_archive"
-          rm -rf "subprojects/$glm_root" build-wrap-red
-          if [[ -e "subprojects/packagecache/$glm_archive" || -e "subprojects/$glm_root" ]]; then
-            echo 'failed to remove the glm wrap input for the RED test' >&2
-            exit 1
-          fi
-
+          test -d subprojects/glm
+          find subprojects/glm -mindepth 1 -delete
+          rmdir subprojects/glm
           export CC=gcc CXX=g++
           if meson setup build-wrap-red \
             --wrap-mode=nodownload \
@@ -153,18 +185,12 @@ jobs:
           cat wrap-red.log
           grep -F 'ERROR: Automatic wrap-based subproject downloading is disabled' wrap-red.log
 
-          rm -rf build-wrap-red
-          restore_result="$(PF_MESON_CACHE_OFFLINE=1 .github/scripts/prime-meson-sources.sh)"
-          printf '%s\n' "$restore_result"
-          grep -Fx 'cache_result=warm' <<<"$restore_result"
-          grep -Fx 'verified_sources=6' <<<"$restore_result"
-
       - name: Build and run native tests
         shell: bash
+        working-directory: ${{ env.MATERIALIZED_SOURCE_ROOT }}
         run: |
           set -euo pipefail
           export CC=gcc CXX=g++
-          rm -rf build-native
           meson setup build-native \
             --wrap-mode=nodownload \
             -Dinput_emulation=disabled \
@@ -174,6 +200,11 @@ jobs:
             --auto-features=enabled
           meson compile -C build-native
           meson test -C build-native --suite gamescope --print-errorlogs
+          meson test -C build-native --suite libdisplay-info --print-errorlogs
+          meson test -C build-native --suite libliftoff --print-errorlogs
+          meson test -C build-native --list > build-native/registered-tests.txt
+          python3 .github/scripts/assert-test-registration.py \
+            --list-file build-native/registered-tests.txt
 
   aarch64-build:
     if: >-
@@ -181,6 +212,10 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, pf-public-ci]
     container: debian:trixie-slim
+    env:
+      MESON_SOURCE_CACHE_ROOT: ${{ github.workspace }}/.ci-source-closure/${{ github.run_id }}/${{ github.run_attempt }}/aarch64-build/cache
+      MATERIALIZED_SOURCE_ROOT: ${{ github.workspace }}/.ci-source-closure/${{ github.run_id }}/${{ github.run_attempt }}/aarch64-build/source
+      MATERIALIZATION_RECEIPT: ${{ github.workspace }}/.ci-source-closure/${{ github.run_id }}/${{ github.run_attempt }}/aarch64-build/materialization-receipt.json
     steps:
       - name: Prepare aarch64 cross environment
         shell: bash
@@ -205,63 +240,53 @@ jobs:
             libxcb-ewmh-dev:arm64 libxcb-icccm4-dev:arm64 \
             libxcb-res0-dev:arm64 libxcb-xfixes0-dev:arm64 \
             libluajit-5.1-dev:arm64 libvulkan-dev:arm64
-          rm -rf /var/lib/apt/lists/*
+          find /var/lib/apt/lists -mindepth 1 -delete
 
-      - name: Check out the tested revision and exact submodules
+      - name: Check out the tested public revision
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          submodules: recursive
+          persist-credentials: false
+          submodules: false
 
       - name: Configure Git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Verify exact submodule checkout
+      - name: Admit and materialize the controlled source closure
         shell: bash
-        run: |
-          set -euo pipefail
-          state="$(git submodule status --recursive)"
-          printf '%s\n' "$state"
-          if grep -Eq '^[+-U]' <<<"$state"; then
-            echo 'submodule checkout does not match the recorded gitlinks' >&2
-            exit 1
-          fi
-
-      - name: Prime and verify immutable Meson sources
-        shell: bash
-        env:
-          MESON_SOURCE_CACHE_ROOT: ${{ runner.temp }}/gamescope-meson-source-cache/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}
         run: |
           set -euo pipefail
           cold_result="$(.github/scripts/prime-meson-sources.sh)"
           printf '%s\n' "$cold_result"
           grep -Fx 'cache_result=cold' <<<"$cold_result"
+          grep -Fx 'validated_edges=34' <<<"$cold_result"
+          grep -Fx 'verified_sources=32' <<<"$cold_result"
 
           warm_result="$(PF_MESON_CACHE_OFFLINE=1 .github/scripts/prime-meson-sources.sh)"
           printf '%s\n' "$warm_result"
           grep -Fx 'cache_result=warm' <<<"$warm_result"
+          grep -Fx 'validated_edges=34' <<<"$warm_result"
+          grep -Fx 'verified_sources=32' <<<"$warm_result"
 
-          if PF_MESON_CACHE_OFFLINE=1 \
-            MESON_SOURCE_CACHE_ROOT="${MESON_SOURCE_CACHE_ROOT}-missing" \
-            .github/scripts/prime-meson-sources.sh; then
-            echo 'an incomplete offline cache was accepted' >&2
-            exit 1
-          fi
+          manifest_sha="$(sha256sum .github/pocketforge-source-closure.tsv | awk '{print $1}')"
+          admission_receipt="$MESON_SOURCE_CACHE_ROOT/$manifest_sha/admission-receipt.json"
+          test -f "$admission_receipt"
+          sha256sum \
+            .github/pocketforge-source-closure.tsv \
+            .github/vendored-sources.tsv \
+            "$admission_receipt"
 
-          manifest_key="$(sha256sum .github/meson-sources.lock | awk '{print $1}')"
-          corrupt_root="${MESON_SOURCE_CACHE_ROOT}-corrupt"
-          install -d "$corrupt_root/$manifest_key"
-          cp -a "$MESON_SOURCE_CACHE_ROOT/$manifest_key/." "$corrupt_root/$manifest_key/"
-          corrupt_archive="$(awk -F '\t' '$1 == "glm" { print $4 }' .github/meson-sources.lock)"
-          printf 'corrupt\n' > "$corrupt_root/$manifest_key/$corrupt_archive"
-          if PF_MESON_CACHE_OFFLINE=1 \
-            MESON_SOURCE_CACHE_ROOT="$corrupt_root" \
-            .github/scripts/prime-meson-sources.sh; then
-            echo 'a hash-mismatched offline cache was accepted' >&2
-            exit 1
-          fi
+          python3 .github/scripts/materialize-source-closure.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --manifest "$GITHUB_WORKSPACE/.github/pocketforge-source-closure.tsv" \
+            --vendored-registry "$GITHUB_WORKSPACE/.github/vendored-sources.tsv" \
+            --cache-root "$MESON_SOURCE_CACHE_ROOT/$manifest_sha" \
+            --output "$MATERIALIZED_SOURCE_ROOT" \
+            --receipt "$MATERIALIZATION_RECEIPT"
+          sha256sum "$MATERIALIZATION_RECEIPT"
 
       - name: Build Gamescope for aarch64
         shell: bash
+        working-directory: ${{ env.MATERIALIZED_SOURCE_ROOT }}
         run: |
           set -euo pipefail
           install -d /usr/local/libexec
@@ -288,7 +313,6 @@ jobs:
             "cpu = 'aarch64'" \
             "endian = 'little'" \
             > aarch64.ini
-          rm -rf build-aarch64
           meson setup build-aarch64 \
             --cross-file aarch64.ini \
             --wrap-mode=nodownload \

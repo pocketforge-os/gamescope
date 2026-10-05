@@ -89,6 +89,40 @@ def rewrite_wrap(path: Path, url: str, revision: str) -> None:
 	path.write_text(text, encoding="utf-8")
 
 
+def verify_materialized_locator_targets(root: Path, validator) -> int:
+	verified = 0
+	for locator in root.rglob(".gitmodules"):
+		for module_path, _url in validator.submodules_from_text(
+			locator.read_text(encoding="utf-8"),
+			str(locator.relative_to(root)),
+		):
+			target = locator.parent / module_path
+			if not target.is_dir():
+				raise validator.ClosureError(
+					f"materialized gitlink source missing: {target.relative_to(root)}"
+				)
+			verified += 1
+	for locator in root.rglob("*.wrap"):
+		parser = validator.parse_config(
+			locator.read_text(encoding="utf-8"),
+			str(locator.relative_to(root)),
+		)
+		try:
+			directory = parser["wrap-git"].get("directory", locator.stem)
+		except KeyError as error:
+			raise validator.ClosureError(
+				f"unsupported materialized wrap: {locator.relative_to(root)}"
+			) from error
+		validator.safe_path(directory, "materialized wrap directory", str(locator.relative_to(root)))
+		target = locator.parent / directory
+		if not target.is_dir():
+			raise validator.ClosureError(
+				f"materialized wrap source missing: {target.relative_to(root)}"
+			)
+		verified += 1
+	return verified
+
+
 def tree_digest(root: Path) -> str:
 	records: list[str] = []
 	for path in sorted(root.rglob("*")):
@@ -186,7 +220,10 @@ def main() -> int:
 			for edge in edges:
 				if edge.parent_id != parent.project_id or edge.kind != "gitlink":
 					continue
-				relative = Path(edge.path).relative_to(validator.source_directory(parent)).as_posix()
+				try:
+					relative = Path(edge.path).relative_to(validator.source_directory(parent)).as_posix()
+				except ValueError:
+					continue
 				children[relative] = edge.pf_url
 			normalized_gitlinks += rewrite_gitmodules(modules, children)
 
@@ -254,9 +291,10 @@ def main() -> int:
 				str(locator.relative_to(args.output)),
 			)
 			if validator.PF_URL.fullmatch(url) is None or validator.HEX40.fullmatch(revision) is None:
-				raise validator.ClosureError(
-					f"materialized mutable or upstream wrap: {locator.relative_to(args.output)}"
-			)
+					raise validator.ClosureError(
+						f"materialized mutable or upstream wrap: {locator.relative_to(args.output)}"
+					)
+		verified_locator_targets = verify_materialized_locator_targets(args.output, validator)
 
 		manifest_sha256 = hashlib.sha256(raw_manifest).hexdigest()
 		receipt = {
@@ -267,6 +305,7 @@ def main() -> int:
 			"materialized_git_inputs": materialized,
 			"normalized_gitlink_urls": normalized_gitlinks,
 			"source_tree_sha256": tree_digest(args.output),
+			"verified_materialized_locator_targets": verified_locator_targets,
 		}
 		args.receipt.parent.mkdir(parents=True, exist_ok=True)
 		args.receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -286,6 +325,7 @@ def main() -> int:
 	print(f"generated_root_wrap_aliases={generated_aliases}")
 	print(f"materialized_git_inputs={materialized}")
 	print(f"normalized_gitlink_urls={normalized_gitlinks}")
+	print(f"verified_materialized_locator_targets={verified_locator_targets}")
 	print(f"source_tree_sha256={receipt['source_tree_sha256']}")
 	print(f"receipt={args.receipt}")
 	return 0

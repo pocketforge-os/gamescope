@@ -310,34 +310,39 @@ def discover_edges(
 		discovered[edge.edge_id] = actual
 		queue.append(edge)
 
-	seen_sources: set[tuple[str, str]] = set()
+	seen_occurrences: set[tuple[str, str, str]] = set()
 	while queue:
 		parent = queue.pop(0)
 		if parent.kind == "vendored-snapshot":
 			continue
-		source_key = (parent.project_id, parent.pf_revision)
-		if source_key in seen_sources:
+		prefix = source_directory(parent)
+		occurrence_key = (parent.project_id, parent.pf_revision, prefix.as_posix())
+		if occurrence_key in seen_occurrences:
 			continue
-		seen_sources.add(source_key)
+		seen_occurrences.add(occurrence_key)
 		repo = repo_for(cache_root, parent.project_id)
 		if not repo.is_dir():
 			fail(f"missing cache repository: {parent.project_id}")
 		if run_git(repo, "cat-file", "-e", f"{parent.pf_revision}^{{commit}}", check=False).returncode != 0:
 			fail(f"missing cache object: {parent.edge_id}")
 
-		prefix = source_directory(parent)
+		parent_gitlinks = gitlinks_at(repo, parent.pf_revision)
 		modules_raw = git_show(repo, parent.pf_revision, ".gitmodules")
-		if modules_raw is not None:
-			parent_gitlinks = gitlinks_at(repo, parent.pf_revision)
-			for relative, url in sorted(
-				submodules_from_text(modules_raw.decode("utf-8"), f"{parent.project_id}:.gitmodules")
-			):
-				if relative not in parent_gitlinks:
-					fail(f"recursive gitlink/.gitmodules drift: {parent.project_id}:{relative}")
+		modules = (
+			submodules_from_text(modules_raw.decode("utf-8"), f"{parent.project_id}:.gitmodules")
+			if modules_raw is not None
+			else []
+		)
+		module_paths = {relative for relative, _url in modules}
+		if module_paths != set(parent_gitlinks):
+			relative = sorted(module_paths.symmetric_difference(parent_gitlinks))[0]
+			full_path = (prefix / relative).as_posix()
+			fail(f"recursive gitlink/.gitmodules drift: {parent.project_id}:{full_path}")
+		for relative, url in sorted(modules):
 				full_path = (prefix / relative).as_posix()
 				edge = find_edge(edges, parent.project_id, full_path)
 				if edge is None:
-					fail(f"unlisted dependency edge: {parent.project_id}:{relative}")
+					fail(f"unlisted dependency edge: {parent.project_id}:{full_path}")
 				actual = DiscoveredEdge(
 					edge.edge_id,
 					parent.project_id,
@@ -356,7 +361,7 @@ def discover_edges(
 			full_path = (prefix / relative).as_posix()
 			edge = find_edge(edges, parent.project_id, full_path)
 			if edge is None:
-				fail(f"unlisted dependency edge: {parent.project_id}:{relative}")
+				fail(f"unlisted dependency edge: {parent.project_id}:{full_path}")
 			actual = DiscoveredEdge(
 				edge.edge_id,
 				parent.project_id,

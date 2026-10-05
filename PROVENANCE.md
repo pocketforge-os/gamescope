@@ -62,6 +62,7 @@ registered test found” does not mean that repository content was dropped.
 | `wlroots` / `subprojects/wlroots/subprojects/wayland-protocols.wrap` | `wayland/wayland-protocols@aa62366fb800a0689f4e9de83811ff33f6a91f44` | `pocketforge-os/wayland-protocols@aa62366fb800a0689f4e9de83811ff33f6a91f44` | `672aaff651890bfe9192db1c66bb41b586a3be48` | `COPYING` / `f1a2b233e8a9a71c40f4aa885be08a0842ac85bb8588703c1dd7e6e6502e3124` | wlroots fallback / upstream surface retained | unpatched |
 | `wlroots` / `subprojects/wlroots/subprojects/wayland.wrap` | `wayland/wayland@1bd29e0709db70b6463c947f150ea20dcfce9cac` | `pocketforge-os/wayland@1bd29e0709db70b6463c947f150ea20dcfce9cac` | `ff9721ee651805a2ef8af3ef3721ba22b40e8791` | `COPYING` / `6eefcb023622a463168a5c20add95fd24a38c7482622a9254a23b99b7c153061` | wlroots fallback / upstream surface retained | unpatched |
 | `libdisplay-info` / `subprojects/libdisplay-info/subprojects/v4l-utils.wrap` | `v4l-utils@1316a80455ef70889bea89491f37cd69170f3ee7` | `pocketforge-os/v4l-utils@1316a80455ef70889bea89491f37cd69170f3ee7` | `8c52844dd9a413450c88639b208f119226bdf4d2` | `COPYING` / `391e4da1c54a422a78d83be7bf84b2dfb8bacdd8ad256fa4374e128655584a8a` | upstream tests / optional `edid-decode` provider | unpatched |
+| `libdisplay-info` / `subprojects/wlroots/subprojects/libdisplay-info/subprojects/v4l-utils.wrap` | `v4l-utils@1316a80455ef70889bea89491f37cd69170f3ee7` | `pocketforge-os/v4l-utils@1316a80455ef70889bea89491f37cd69170f3ee7` | `8c52844dd9a413450c88639b208f119226bdf4d2` | `COPYING` / `391e4da1c54a422a78d83be7bf84b2dfb8bacdd8ad256fa4374e128655584a8a` | wlroots DRM fallback / optional `edid-decode` provider and occurrence closure | unpatched |
 | `gamescope` / `thirdparty/sol/sol.hpp` | `ThePhD/sol2@2b0d2fe8ba0074e16b499940c4f3126b9c7d3471` | `pocketforge-os/sol2@9755a852628ca0abfa8a05ec1fa475fb2609b2e1` | content `81ea0b4779f70ad4a4fc2b08da302cd2317ad066682f448a611a530c681844e6` | `LICENSE.txt` / `4e171f2251b1170c0a6c9e836a36605565eee238cd64abf50ad43a01c9412ce4` | native, aarch64, OpenVR / scripting and source snapshot test | patched deterministic snapshot |
 | `gamescope` / `src/shaders/NVIDIAImageScaling` | `NVIDIAGameWorks/NVIDIAImageScaling@35e13ba316c98eeecf16f37eae70ce88019911f6` | `pocketforge-os/NVIDIAImageScaling@35e13ba316c98eeecf16f37eae70ce88019911f6` | content `fbec4e3d79c3d4072aa50bb94ff4dc277a235c3345c34a5b2e627ecc6919c82d` | `licence.txt` / `62207f1c0fae72800ea7d28ee108e7dbeb852dde20b00c70fc7b0d235e19e46d` | native, aarch64, OpenVR / shader compile and byte proof | exact snapshot |
 | `gamescope` / `src/shaders/ffx` | `GPUOpen-Effects/FidelityFX-FSR@a21ffb8f6c13233ba336352bdff293894c706575` | `pocketforge-os/FidelityFX-FSR@dcd34005bc7d815e64688d2bd92a495da3d5e9ef` | content `3fae1917e5d85f7914f181721a5e59b9e4a11a3c5cd836ef50ae246ffdbba063` | `license.txt` / `db089274ce766da70f5b7d791029c3486f9f9e27c8c79c652689603d3192e802` | native, aarch64, OpenVR / shader compile and source snapshot test | patched exact-copy snapshot |
@@ -89,7 +90,10 @@ commits into the digest-keyed bare-repository cache. Validation and
 materialization then run without network access. Materialization exports exact
 trees instead of running recursive submodule or Meson download logic, applies
 only Gamescope's committed glm/stb Meson overlays, and produces a receipt tied
-to the Gamescope revision and manifest digest. Because Meson globally registers
+to the Gamescope revision and manifest digest. Each source-tree occurrence is
+traversed independently, even when multiple locations use the same project and
+pin, and every emitted locator is checked for its sibling materialized source.
+Because Meson globally registers
 nested fallback names, materialization also derives root wrap aliases for the
 direct libdisplay-info and libliftoff gitlinks. Those aliases contain the same
 manifest URL and pin; they make the direct version constraints authoritative
