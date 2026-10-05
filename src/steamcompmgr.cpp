@@ -2136,7 +2136,7 @@ paint_window_commit( const gamescope::Rc<commit_t> &lastCommit, steamcompmgr_win
 	layer->clientTransform = lastCommit->clientTransform;
 	layer->nativePlaneRole = ( flags & PaintWindowFlag::BasePlane )
 		? gamescope::output_rotation::LayerRole::Base
-		: ( ( w->isOverlay || w->isExternalOverlay )
+		: ( w->isTrustedSystemOverlay
 			? gamescope::output_rotation::LayerRole::SystemOverlay
 			: gamescope::output_rotation::LayerRole::Unknown );
 
@@ -5167,6 +5167,7 @@ add_win(xwayland_ctx_t *ctx, Window id, Window prev, unsigned long sequence)
 
 	new_win->isOverlay = false;
 	new_win->isExternalOverlay = false;
+	new_win->isTrustedSystemOverlay = false;
 	new_win->isSteamLegacyBigPicture = false;
 	new_win->isSteamStreamingClient = false;
 	new_win->isSteamStreamingClientVideo = false;

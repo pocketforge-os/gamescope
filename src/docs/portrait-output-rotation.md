@@ -89,13 +89,18 @@ system overlay. Every admitted layer must have:
 The base must remain opaque at zpos zero and cover the complete logical output.
 The optional overlay must be compositor-classified, have a distinct buffer
 identity and higher zpos, and use a supported nonzero opacity and premultiplied
-or coverage blend mode. A candidate DRM overlay plane must support the exact
-format/modifier and expose alpha, pixel-blend-mode, and zpos properties. The
-subsequent liftoff atomic preparation remains the final exact assignment check;
-failure forces composition. The native-frame copy changes only plane placement,
-scale, black-border state, and the native-output marker, so adding or removing
-the overlay retains the base texture/framebuffer identity and an identical base
-plane record.
+or coverage blend mode. The layer-shell global is exposed only to the
+compositor-launched `mangoapp` peer, and that peer's surface is marked as
+trusted for native-plane admission. Xwayland's legacy
+`GAMESCOPE_EXTERNAL_OVERLAY` property remains a composition classification
+only; it cannot grant native-plane trust. A candidate DRM overlay plane must
+support the exact format/modifier and expose alpha, pixel-blend-mode, and zpos
+properties. The subsequent liftoff atomic preparation remains the final exact
+assignment check; failure forces composition. The native-frame copy changes
+only plane placement, scale, black-border state, and the native-output marker,
+so adding or removing the overlay retains the base texture/framebuffer
+identity and an identical base-plane record. Untrusted application clients
+therefore cannot impersonate or reorder the system overlay.
 
 The overlay destination is obtained from the same rectangle algebra as damage.
 For logical `[900,1100) x [500,600)`, 90 produces native
