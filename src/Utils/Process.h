@@ -8,6 +8,8 @@
 
 namespace gamescope::Process
 {
+    using ParentPostForkCallback = std::function<void( pid_t )>;
+
     void BecomeSubreaper();
     void SetDeathSignal( int nSignal );
 
@@ -31,8 +33,8 @@ namespace gamescope::Process
 
     void CloseAllFds( std::span<int> nExcludedFds );
 
-    pid_t SpawnProcess( char **argv, std::function<void()> fnPreambleInChild = nullptr, bool bDoubleFork = false );
-    pid_t SpawnProcessInWatchdog( char **argv, bool bRespawn = false, std::function<void()> fnPreambleInChild = nullptr );
+    pid_t SpawnProcess( char **argv, std::function<void()> fnPreambleInChild = nullptr, bool bDoubleFork = false, ParentPostForkCallback fnParentPostFork = nullptr );
+    pid_t SpawnProcessInWatchdog( char **argv, bool bRespawn = false, std::function<void()> fnPreambleInChild = nullptr, ParentPostForkCallback fnParentPostFork = nullptr );
 
     bool HasCapSysNice();
     void SetNice( int nNice );

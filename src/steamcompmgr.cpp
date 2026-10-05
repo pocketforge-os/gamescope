@@ -8355,9 +8355,12 @@ void LaunchNestedChildren( char **ppPrimaryChildArgv )
 	if ( g_bLaunchMangoapp )
 	{
 		char *ppMangoappArgv[] = { (char *)"mangoapp", NULL };
-		pid_t nMangoappReaperPid =
-			gamescope::Process::SpawnProcessInWatchdog( ppMangoappArgv, true );
-		wlserver_set_mangoapp_reaper_pid( nMangoappReaperPid );
+		gamescope::Process::SpawnProcessInWatchdog(
+			ppMangoappArgv, true, nullptr,
+			[]( pid_t nMangoappReaperPid )
+			{
+				wlserver_set_mangoapp_reaper_pid( nMangoappReaperPid );
+			} );
 	}
 }
 
