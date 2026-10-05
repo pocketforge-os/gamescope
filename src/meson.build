@@ -112,6 +112,7 @@ src = [
   'main.cpp',
   'edid.cpp',
   'wlserver.cpp',
+  'system_overlay_auth.cpp',
   'vblankmanager.cpp',
   'rendervulkan.cpp',
   'output_staging.cpp',

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <wayland-server-core.h>
+#include <sys/types.h>
 #include <atomic>
 #include <vector>
 #include <memory>
@@ -278,6 +279,7 @@ struct wlserver_output_info {
 };
 
 void wlserver_set_output_info( const wlserver_output_info *info );
+void wlserver_set_mangoapp_reaper_pid( pid_t pid );
 
 gamescope_xwayland_server_t *wlserver_get_xwayland_server( size_t index );
 const char *wlserver_get_wl_display_name( void );
