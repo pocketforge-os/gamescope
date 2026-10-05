@@ -20,7 +20,7 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 // This file was generated with a script.
-// Generated 2024-09-03 03:46:49.867770 UTC
+// Generated <normalized> UTC
 // This header was generated with sol v3.3.1 (revision 2b0d2fe8)
 // https://github.com/ThePhD/sol2
 
@@ -22771,7 +22771,7 @@ namespace sol {
 			static int pairs_associative(std::true_type, lua_State* L_) {
 				auto& src = get_src(L_);
 				stack::push(L_, next_iter<ip>);
-				stack::push<user<iter>>(L_, L_, 1, deferred_uc::begin(L_, src), deferred_uc::begin(L_, src));
+				stack::push<user<iter>>(L_, L_, 1, deferred_uc::begin(L_, src), deferred_uc::end(L_, src));
 				stack::push(L_, lua_nil);
 				return 3;
 			}

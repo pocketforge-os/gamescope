@@ -1,7 +1,6 @@
-[wrap-file]
-directory = stb-5736b15f7ea0ffb08dd38af21067c314d6a3aae9
-source_url = https://github.com/nothings/stb/archive/5736b15f7ea0ffb08dd38af21067c314d6a3aae9.tar.gz
-source_filename = stb-5736b15f7ea0ffb08dd38af21067c314d6a3aae9.tar.gz
-source_hash = d00921d49b06af62aa6bfb97c1b136bec661dd11dd4eecbcb0da1f6da7cedb4c
+[wrap-git]
+directory = stb
+url = https://github.com/pocketforge-os/stb.git
+revision = 5736b15f7ea0ffb08dd38af21067c314d6a3aae9
 
 patch_directory = stb
