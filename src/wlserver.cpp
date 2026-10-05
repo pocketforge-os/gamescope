@@ -2080,15 +2080,16 @@ void xdg_surface_new(struct wl_listener *listener, void *data)
 void layer_shell_surface_new(struct wl_listener *listener, void *data)
 {
 	struct wlr_layer_surface_v1 *layer_surface = (struct wlr_layer_surface_v1 *)data;
+	struct wl_client *client = wl_resource_get_client( layer_surface->resource );
 
-	wlserver_xdg_surface_info *surface_info = waylandy_type_surface_new(layer_surface->client, layer_surface->surface);
+	wlserver_xdg_surface_info *surface_info = waylandy_type_surface_new(client, layer_surface->surface);
 	surface_info->destroy.notify = waylandy_surface_destroy;
 	wl_signal_add(&layer_surface->events.destroy, &surface_info->destroy);
 
 	surface_info->layer_surface = layer_surface;
 
 	surface_info->win->isExternalOverlay = true;
-	surface_info->win->isTrustedSystemOverlay = is_trusted_system_overlay_client( layer_surface->client );
+	surface_info->win->isTrustedSystemOverlay = is_trusted_system_overlay_client( client );
 }
 
 #if HAVE_LIBEIS
