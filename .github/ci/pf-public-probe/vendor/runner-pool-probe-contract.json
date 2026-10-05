@@ -1,0 +1,61 @@
+{
+  "network_policies": {
+    "pf-public": {
+      "probe_contract": {
+        "route_policy_version": 3,
+        "local_bridge_pattern": "^(docker0|br-[0-9a-f]{12})$",
+        "connected_subnet": "192.168.155.0/24",
+        "gateway_dns_dhcp": "192.168.155.1",
+        "dns_test_name": "github.com",
+        "public_https_url": "https://github.com/",
+        "blocked_tcp_endpoints": [
+          {
+            "name": "gateway-ssh",
+            "host": "192.168.155.1",
+            "port": 22
+          },
+          {
+            "name": "modelmaker-ssh",
+            "host": "10.0.40.90",
+            "port": 22
+          },
+          {
+            "name": "pool-build-20-ssh",
+            "host": "192.168.151.20",
+            "port": 22
+          },
+          {
+            "name": "pool-build-21-ssh",
+            "host": "192.168.151.21",
+            "port": 22
+          },
+          {
+            "name": "pool-build-22-ssh",
+            "host": "192.168.151.22",
+            "port": 22
+          },
+          {
+            "name": "pool-build-23-ssh",
+            "host": "192.168.151.23",
+            "port": 22
+          },
+          {
+            "name": "aws-metadata",
+            "host": "169.254.169.254",
+            "port": 80
+          },
+          {
+            "name": "ecs-credentials",
+            "host": "169.254.170.2",
+            "port": 80
+          },
+          {
+            "name": "aliyun-metadata",
+            "host": "100.100.100.200",
+            "port": 80
+          }
+        ]
+      }
+    }
+  }
+}

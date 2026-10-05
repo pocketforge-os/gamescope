@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "source_repository": "pocketforge-os/pocketforge-automation",
+  "source_commit": "c7186c0ddb77e990e5ba636f3be5ad946b079cd3",
+  "inputs": {
+    "vendor/pf-public-job-probe.py": {
+      "source_api_path": "repos/pocketforge-os/pocketforge-automation/contents/scripts/pf-public-job-probe.py?ref=c7186c0ddb77e990e5ba636f3be5ad946b079cd3",
+      "source_path": "scripts/pf-public-job-probe.py",
+      "source_git_blob": "87d1b19adf3b09efacb6f58ee2bbac97a5ad0d59",
+      "source_sha256": "966c0472e2e32d07471df094130e9cb13ee612ab7bb74dc5486f2b079b080bb7",
+      "vendored_git_blob": "87d1b19adf3b09efacb6f58ee2bbac97a5ad0d59",
+      "vendored_sha256": "966c0472e2e32d07471df094130e9cb13ee612ab7bb74dc5486f2b079b080bb7",
+      "transform": "identity"
+    },
+    "vendor/runner-pool-probe-contract.json": {
+      "source_api_path": "repos/pocketforge-os/pocketforge-automation/contents/config/runner-pool.json?ref=c7186c0ddb77e990e5ba636f3be5ad946b079cd3",
+      "source_path": "config/runner-pool.json",
+      "source_git_blob": "cbe56db6bb2beb6c75a9379dc7951913f32a221b",
+      "source_sha256": "4a341894e20be9f6eb844599788d574515b6f4b00508d79c06d1ad8d8cd0c0b3",
+      "extraction": "network_policies[\"pf-public\"][\"probe_contract\"]",
+      "vendored_git_blob": "233244d35a96878419efbfbef5ca73ec34201a54",
+      "vendored_sha256": "091f093efb2acda88c398193c8edd694f57860b7281f31aca5960898afc462f6",
+      "transform": "minimal JSON wrapper preserving the probe lookup path"
+    }
+  }
+}

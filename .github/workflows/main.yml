@@ -15,6 +15,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pf-public-isolation-probe:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, pf-public-ci]
+    steps:
+      - name: Check out the tested public revision
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify pinned public probe inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/ci/pf-public-probe/test-vendored-inputs.py \
+            --root "$GITHUB_WORKSPACE"
+          python3 .github/ci/pf-public-probe/test-workflow-policy.py \
+            --root "$GITHUB_WORKSPACE"
+
+      - name: Run live public isolation probe and negative controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/ci/pf-public-probe/run-probe-and-controls.py \
+            --probe .github/ci/pf-public-probe/vendor/pf-public-job-probe.py \
+            --config .github/ci/pf-public-probe/vendor/runner-pool-probe-contract.json \
+            --live
+
   native-tests:
     if: >-
       github.event_name != 'pull_request' ||

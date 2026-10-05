@@ -1,0 +1,148 @@
+{
+  "routes": [
+    {
+      "dst": "default",
+      "gateway": "192.168.155.1",
+      "dev": "ens2"
+    },
+    {
+      "dst": "172.17.0.0/16",
+      "dev": "docker0",
+      "protocol": "kernel",
+      "scope": "link",
+      "prefsrc": "172.17.0.1",
+      "flags": [
+        "linkdown"
+      ]
+    },
+    {
+      "dst": "192.168.155.0/24",
+      "dev": "ens2",
+      "protocol": "kernel",
+      "scope": "link",
+      "prefsrc": "192.168.155.6"
+    },
+    {
+      "dst": "192.168.155.1/32",
+      "dev": "ens2",
+      "protocol": "dhcp",
+      "scope": "link"
+    }
+  ],
+  "rules": [
+    {
+      "priority": 0,
+      "src": "all",
+      "table": "local"
+    },
+    {
+      "priority": 32766,
+      "src": "all",
+      "table": "main"
+    },
+    {
+      "priority": 32767,
+      "src": "all",
+      "table": "default"
+    }
+  ],
+  "routes_all": [
+    {
+      "dst": "default",
+      "gateway": "192.168.155.1",
+      "dev": "ens2",
+      "table": "main"
+    },
+    {
+      "dst": "172.17.0.0/16",
+      "dev": "docker0",
+      "protocol": "kernel",
+      "scope": "link",
+      "prefsrc": "172.17.0.1",
+      "flags": [
+        "linkdown"
+      ],
+      "table": "main"
+    },
+    {
+      "dst": "192.168.155.0/24",
+      "dev": "ens2",
+      "protocol": "kernel",
+      "scope": "link",
+      "prefsrc": "192.168.155.6",
+      "table": "main"
+    },
+    {
+      "dst": "192.168.155.1/32",
+      "dev": "ens2",
+      "protocol": "dhcp",
+      "scope": "link",
+      "table": "main"
+    },
+    {
+      "type": "local",
+      "dst": "127.0.0.0/8",
+      "dev": "lo",
+      "table": "local"
+    },
+    {
+      "type": "broadcast",
+      "dst": "127.255.255.255/32",
+      "dev": "lo",
+      "table": "local"
+    },
+    {
+      "type": "local",
+      "dst": "172.17.0.1/32",
+      "dev": "docker0",
+      "table": "local"
+    },
+    {
+      "type": "broadcast",
+      "dst": "172.17.255.255/32",
+      "dev": "docker0",
+      "table": "local"
+    },
+    {
+      "type": "local",
+      "dst": "192.168.155.6/32",
+      "dev": "ens2",
+      "table": "local"
+    },
+    {
+      "type": "broadcast",
+      "dst": "192.168.155.255/32",
+      "dev": "ens2",
+      "table": "local"
+    }
+  ],
+  "links": {
+    "docker0": {
+      "bridge": true,
+      "brif": [],
+      "master": null
+    },
+    "ens2": {
+      "bridge": false,
+      "brif": [],
+      "master": null
+    }
+  },
+  "dhcp_server": "192.168.155.1",
+  "dns_servers": [
+    "192.168.155.1"
+  ],
+  "gateway_dns_ok": true,
+  "public_https_ok": true,
+  "tcp_reachable": {
+    "gateway-ssh": false,
+    "modelmaker-ssh": false,
+    "pool-build-20-ssh": false,
+    "pool-build-21-ssh": false,
+    "pool-build-22-ssh": false,
+    "pool-build-23-ssh": false,
+    "aws-metadata": false,
+    "ecs-credentials": false,
+    "aliyun-metadata": false
+  }
+}
