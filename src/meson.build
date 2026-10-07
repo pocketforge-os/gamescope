@@ -115,6 +115,7 @@ src = [
   'system_overlay_auth.cpp',
   'vblankmanager.cpp',
   'rendervulkan.cpp',
+	'drm_device_selection.cpp',
   'output_staging.cpp',
   'output_rotation.cpp',
   'log.cpp',
