@@ -16,6 +16,13 @@ test_drm_device_selection = executable(
 )
 test('drm-device-selection', test_drm_device_selection)
 
+test_drm_commit_probe = executable(
+	'test_drm_commit_probe',
+	'test_drm_commit_probe.cpp',
+	include_directories: [srcdir],
+)
+test('drm-commit-probe', test_drm_commit_probe)
+
 if drm_dep.found()
 	test_drm_format_selection = executable(
 		'test_drm_format_selection',
