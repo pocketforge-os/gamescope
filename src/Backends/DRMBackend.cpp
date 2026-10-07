@@ -42,6 +42,7 @@
 #include "modegen.hpp"
 #include "rendervulkan.hpp"
 #include "drm_device_selection.hpp"
+#include "drm_format_selection.hpp"
 #include "steamcompmgr.hpp"
 #include "vblankmanager.hpp"
 #include "wlserver.hpp"
@@ -705,25 +706,19 @@ static bool get_plane_formats( struct drm_t *drm, gamescope::CDRMPlane *pPlane, 
 	return true;
 }
 
-static uint32_t pick_plane_format( const struct wlr_drm_format_set *formats, uint32_t Xformat, uint32_t Aformat )
+static std::vector<uint32_t> compatible_plane_formats( const struct wlr_drm_format_set *formats )
 {
-	uint32_t result = DRM_FORMAT_INVALID;
+	std::vector<uint32_t> result;
 	for ( size_t i = 0; i < formats->len; i++ ) {
 		const wlr_drm_format &planeFormat = formats->formats[i];
-		uint32_t fmt = planeFormat.format;
 
 		// Require one exact KMS/Vulkan modifier intersection, including either the
 		// combined compute usage or the same-format linear staging fallback.
-		if ( !vulkan_supports_output_format( fmt,
+		if ( !vulkan_supports_output_format( planeFormat.format,
 			std::span<const uint64_t>{ planeFormat.modifiers, planeFormat.len } ) )
 			continue;
 
-		if ( fmt == Xformat ) {
-			// Prefer formats without alpha channel for main plane
-			result = fmt;
-		} else if ( result == DRM_FORMAT_INVALID && fmt == Aformat ) {
-			result = fmt;
-		}
+		result.push_back( planeFormat.format );
 	}
 	return result;
 }
@@ -1417,45 +1412,24 @@ bool init_drm(struct drm_t *drm, int width, int height, int refresh)
 	// 2. When compositing HDR content as a fallback when we undock, it avoids introducing
 	// a bunch of horrible banding when going to G2.2 curve.
 	// It ensures that we can dither that.
-	g_nDRMFormat = pick_plane_format(&drm->primary_formats, DRM_FORMAT_XRGB2101010, DRM_FORMAT_ARGB2101010);
+	const std::vector<uint32_t> primaryOutputFormats = compatible_plane_formats( &drm->primary_formats );
+	g_nDRMFormat = gamescope::drm_format_selection::selectPrimary( primaryOutputFormats );
 	if ( g_nDRMFormat == DRM_FORMAT_INVALID ) {
-		g_nDRMFormat = pick_plane_format(&drm->primary_formats, DRM_FORMAT_XBGR2101010, DRM_FORMAT_ABGR2101010);
-		if ( g_nDRMFormat == DRM_FORMAT_INVALID ) {
-			g_nDRMFormat = pick_plane_format(&drm->primary_formats, DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888);
-			if ( g_nDRMFormat == DRM_FORMAT_INVALID ) {
-				drm_log.errorf("Primary plane doesn't support any formats >= 8888");
-				return false;
-			}
-		}
+		drm_log.errorf("Primary plane doesn't support any formats >= 8888");
+		return false;
 	}
 
 	if (have_overlay_planes(drm)) {
-		// ARGB8888 is the Xformat and AFormat here in this function as we want transparent overlay
-		g_nDRMFormatOverlay = pick_plane_format(&drm->formats, DRM_FORMAT_ARGB2101010, DRM_FORMAT_ARGB2101010);
+		const std::vector<uint32_t> overlayOutputFormats = compatible_plane_formats( &drm->formats );
+		g_nDRMFormatOverlay = gamescope::drm_format_selection::selectOverlay( overlayOutputFormats );
 		if ( g_nDRMFormatOverlay == DRM_FORMAT_INVALID ) {
-			g_nDRMFormatOverlay = pick_plane_format(&drm->formats, DRM_FORMAT_ABGR2101010, DRM_FORMAT_ABGR2101010);
-			if ( g_nDRMFormatOverlay == DRM_FORMAT_INVALID ) {
-				g_nDRMFormatOverlay = pick_plane_format(&drm->formats, DRM_FORMAT_ARGB8888, DRM_FORMAT_ARGB8888);
-				if ( g_nDRMFormatOverlay == DRM_FORMAT_INVALID ) {
-					drm_log.errorf("Overlay plane doesn't support any formats >= 8888");
-					return false;
-				}
-			}
-		}
-	} else {
-		switch (g_nDRMFormat) {
-		case DRM_FORMAT_XRGB2101010:
-			g_nDRMFormatOverlay = DRM_FORMAT_ARGB2101010;
-			break;
-		case DRM_FORMAT_ABGR2101010:
-			g_nDRMFormatOverlay = DRM_FORMAT_ABGR2101010;
-			break;
-		case DRM_FORMAT_XRGB8888:
-			g_nDRMFormatOverlay = DRM_FORMAT_ARGB8888;
-			break;
-		default:
+			drm_log.errorf("Overlay plane doesn't support any formats >= 8888");
 			return false;
 		}
+	} else {
+		g_nDRMFormatOverlay = gamescope::drm_format_selection::alphaEquivalent( g_nDRMFormat );
+		if ( g_nDRMFormatOverlay == DRM_FORMAT_INVALID )
+			return false;
 	}
 
 	// Create a pipe to wake the flip handler poll for immediate exit.
