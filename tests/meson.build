@@ -16,6 +16,16 @@ test_drm_device_selection = executable(
 )
 test('drm-device-selection', test_drm_device_selection)
 
+if drm_dep.found()
+	test_drm_format_selection = executable(
+		'test_drm_format_selection',
+		[srcdir / 'drm_format_selection.cpp', 'test_drm_format_selection.cpp'],
+		include_directories: [srcdir],
+		dependencies: [drm_dep],
+	)
+	test('drm-format-selection', test_drm_format_selection)
+endif
+
 test_output_rotation = executable(
 	'test_output_rotation',
 	[srcdir / 'output_rotation.cpp', 'test_output_rotation.cpp'],
