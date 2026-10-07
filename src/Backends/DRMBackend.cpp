@@ -41,6 +41,7 @@
 #include "main.hpp"
 #include "modegen.hpp"
 #include "rendervulkan.hpp"
+#include "drm_device_selection.hpp"
 #include "steamcompmgr.hpp"
 #include "vblankmanager.hpp"
 #include "wlserver.hpp"
@@ -1265,16 +1266,31 @@ bool init_drm(struct drm_t *drm, int width, int height, int refresh)
 	drm->preferred_refresh = refresh;
 
 	drm->device_name = nullptr;
-	dev_t dev_id = 0;
-	if (vulkan_primary_dev_id(&dev_id)) {
-		drmDevice *drm_dev = nullptr;
-		if (drmGetDeviceFromDevId(dev_id, 0, &drm_dev) != 0) {
-			drm_log.errorf("Failed to find DRM device with device ID %" PRIu64, (uint64_t)dev_id);
-			return false;
+	std::string vulkan_primary_device;
+	if ( g_sPreferredDrmDevice == nullptr || g_sPreferredDrmDevice[0] == '\0' )
+	{
+		dev_t dev_id = 0;
+		if (vulkan_primary_dev_id(&dev_id)) {
+			drmDevice *drm_dev = nullptr;
+			if (drmGetDeviceFromDevId(dev_id, 0, &drm_dev) != 0) {
+				drm_log.errorf("Failed to find DRM device with device ID %" PRIu64, (uint64_t)dev_id);
+				return false;
+			}
+			assert(drm_dev->available_nodes & (1 << DRM_NODE_PRIMARY));
+			vulkan_primary_device = drm_dev->nodes[DRM_NODE_PRIMARY];
 		}
-		assert(drm_dev->available_nodes & (1 << DRM_NODE_PRIMARY));
-		drm->device_name = strdup(drm_dev->nodes[DRM_NODE_PRIMARY]);
-		drm_log.infof("opening DRM node '%s'", drm->device_name);
+	}
+
+	const gamescope::drm_device_selection::DeviceSelection device_selection =
+		gamescope::drm_device_selection::selectDevice(
+			g_sPreferredDrmDevice ? g_sPreferredDrmDevice : "", vulkan_primary_device );
+	if ( device_selection.source != gamescope::drm_device_selection::DeviceSource::Discovery )
+	{
+		drm->device_name = strdup( device_selection.path.c_str() );
+		if ( device_selection.source == gamescope::drm_device_selection::DeviceSource::Preferred )
+			drm_log.infof( "using preferred DRM/KMS device '%s'", drm->device_name );
+		else
+			drm_log.infof("opening DRM node '%s'", drm->device_name);
 	}
 	else
 	{

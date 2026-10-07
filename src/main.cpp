@@ -71,6 +71,7 @@ const struct option *gamescope_options = (struct option[]){
 	{ "fsr-sharpness", required_argument, nullptr, 0 },
 	{ "rt", no_argument, nullptr, 0 },
 	{ "prefer-vk-device", required_argument, 0 },
+	{ "prefer-drm", required_argument, 0 },
 	{ "expose-wayland", no_argument, 0 },
 	{ "mouse-sensitivity", required_argument, nullptr, 's' },
 	{ "mangoapp", no_argument, nullptr, 0 },
@@ -201,6 +202,7 @@ const char usage[] =
 	"  -e, --steam                    enable Steam integration\n"
 	"  --xwayland-count               create N xwayland servers\n"
 	"  --prefer-vk-device             prefer Vulkan device for compositing (ex: 1002:7300)\n"
+	"  --prefer-drm                   prefer DRM/KMS device for scanout (ex: /dev/dri/card0 or card0)\n"
 	"  --force-orientation            rotate the internal display (left, right, normal, upsidedown)\n"
 	"  --force-windows-fullscreen     force windows inside of gamescope to be the size of the nested display (fullscreen)\n"
 	"  --cursor-scale-height          if specified, sets a base output height to linearly scale the cursor against.\n"
@@ -694,6 +696,7 @@ int g_nPreferredOutputWidth = 0;
 int g_nPreferredOutputHeight = 0;
 bool g_bExposeWayland = false;
 const char *g_sOutputName = nullptr;
+const char *g_sPreferredDrmDevice = nullptr;
 bool g_bDebugLayers = false;
 bool g_bForceDisableColorMgmt = false;
 bool g_bRt = false;
@@ -811,6 +814,8 @@ int main(int argc, char **argv)
 					sscanf( optarg, "%X:%X", &vendorID, &deviceID );
 					g_preferVendorID = vendorID;
 					g_preferDeviceID = deviceID;
+				} else if (strcmp(opt_name, "prefer-drm") == 0) {
+					g_sPreferredDrmDevice = optarg;
 				} else if (strcmp(opt_name, "immediate-flips") == 0) {
 					cv_tearing_enabled = true;
 				} else if (strcmp(opt_name, "force-grab-cursor") == 0) {
@@ -955,6 +960,12 @@ int main(int argc, char **argv)
 	{
 #if HAVE_DRM
 		case gamescope::GamescopeBackend::DRM:
+			if ( !g_sPreferredDrmDevice )
+			{
+				const char *preferredDrmDevice = getenv( "GAMESCOPE_PREFER_DRM" );
+				if ( preferredDrmDevice && preferredDrmDevice[0] )
+					g_sPreferredDrmDevice = preferredDrmDevice;
+			}
 			gamescope::IBackend::Set<gamescope::CDRMBackend>();
 			break;
 #endif

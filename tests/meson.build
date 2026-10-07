@@ -9,6 +9,13 @@ test_output_staging = executable(
 )
 test('output-staging', test_output_staging)
 
+test_drm_device_selection = executable(
+	'test_drm_device_selection',
+	[srcdir / 'drm_device_selection.cpp', 'test_drm_device_selection.cpp'],
+	include_directories: [srcdir],
+)
+test('drm-device-selection', test_drm_device_selection)
+
 test_output_rotation = executable(
 	'test_output_rotation',
 	[srcdir / 'output_rotation.cpp', 'test_output_rotation.cpp'],
