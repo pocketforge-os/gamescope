@@ -34,6 +34,7 @@
 #include "wlr_end.hpp"
 
 #include "rendervulkan.hpp"
+#include "vulkan_drm_node_policy.hpp"
 #include "vulkan_present_features.h"
 #include "main.hpp"
 #include "steamcompmgr.hpp"
@@ -498,7 +499,7 @@ bool CVulkanDevice::createDevice()
 		};
 		vk.GetPhysicalDeviceProperties2( physDev(), &props2 );
 
-		if ( !GetBackend()->UsesVulkanSwapchain() && !drmProps.hasPrimary ) {
+		if ( gamescope::vulkan_drm_node_policy::requires_primary( GetBackend()->UsesVulkanSwapchain(), GetBackend()->IsSessionBased() ) && !drmProps.hasPrimary ) {
 			vk_log.errorf( "physical device has no primary node" );
 			return false;
 		}
