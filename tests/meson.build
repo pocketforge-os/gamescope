@@ -30,6 +30,13 @@ test_pipeline_compile_probe = executable(
 )
 test('pipeline-compile-probe', test_pipeline_compile_probe)
 
+test_compositor_diagnostics = executable(
+	'test_compositor_diagnostics',
+	'test_compositor_diagnostics.cpp',
+	include_directories: [srcdir],
+)
+test('compositor-diagnostics', test_compositor_diagnostics)
+
 if drm_dep.found()
 	test_drm_format_selection = executable(
 		'test_drm_format_selection',

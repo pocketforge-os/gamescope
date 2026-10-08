@@ -57,6 +57,7 @@
 
 #include "wlserver.hpp"
 #include "system_overlay_auth.hpp"
+#include "compositor_diagnostics.hpp"
 #include "hdmi.h"
 #include "main.hpp"
 #include "steamcompmgr.hpp"
@@ -294,6 +295,18 @@ void xwayland_surface_commit(struct wlr_surface *wlr_surface) {
 	}
 
 	struct wlr_buffer *buf = wlr_buffer_lock( tex->buf );
+	if ( gamescope::compositor_diagnostics::enabled() )
+	{
+		struct wlr_dmabuf_attributes dmabuf = {};
+		const bool hasDmabuf = wlr_buffer_get_dmabuf( buf, &dmabuf );
+		wl_log.infof( "surface probe event=commit origin=%s surface=%p buffer=%p "
+			"kind=%s size=%dx%d",
+			wlserver_x11_surface_info ? "xwayland" :
+				( wlserver_xdg_surface_info ? "xdg" : "pending" ),
+			wlr_surface, buf,
+			gamescope::compositor_diagnostics::buffer_kind( hasDmabuf ),
+			buf->width, buf->height );
+	}
 
 	gpuvis_trace_printf( "xwayland_surface_commit wlr_surface %p", wlr_surface );
 
