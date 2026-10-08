@@ -1235,7 +1235,7 @@ VkPipeline CVulkanDevice::compilePipeline(uint32_t layerCount, uint32_t ycbcrMas
 	};
 
 	VkPipeline result;
-	const bool probe = env_to_bool( "GAMESCOPE_PIPELINE_COMPILE_LOG" );
+	const bool probe = gamescope::pipeline_compile_probe::enabled();
 	const uint64_t probeId = s_pipelineCompileId.fetch_add( 1, std::memory_order_relaxed ) + 1;
 	const auto probeStart = std::chrono::steady_clock::now();
 	if ( probe )
