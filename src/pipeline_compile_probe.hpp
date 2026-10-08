@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdlib>
 #include <cstdint>
 
 namespace gamescope::pipeline_compile_probe
@@ -10,6 +11,12 @@ enum class Source : uint8_t
 	Precompile,
 	Demand,
 };
+
+inline bool enabled()
+{
+	const char *value = std::getenv( "GAMESCOPE_PIPELINE_COMPILE_LOG" );
+	return value && *value && std::atoi( value ) != 0;
+}
 
 constexpr const char *source_name( Source source )
 {
