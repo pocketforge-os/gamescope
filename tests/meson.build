@@ -23,6 +23,13 @@ test_drm_commit_probe = executable(
 )
 test('drm-commit-probe', test_drm_commit_probe)
 
+test_pipeline_compile_probe = executable(
+	'test_pipeline_compile_probe',
+	'test_pipeline_compile_probe.cpp',
+	include_directories: [srcdir],
+)
+test('pipeline-compile-probe', test_pipeline_compile_probe)
+
 if drm_dep.found()
 	test_drm_format_selection = executable(
 		'test_drm_format_selection',
