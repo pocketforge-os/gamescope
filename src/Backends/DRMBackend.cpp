@@ -44,6 +44,7 @@
 #include "drm_device_selection.hpp"
 #include "drm_commit_probe.hpp"
 #include "drm_format_selection.hpp"
+#include "compositor_diagnostics.hpp"
 #include "steamcompmgr.hpp"
 #include "vblankmanager.hpp"
 #include "wlserver.hpp"
@@ -2643,6 +2644,7 @@ static int
 drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, bool needs_modeset )
 {
 	auto entry = FrameInfoToLiftoffStateCacheEntry( drm, frameInfo );
+	std::array<uint32_t, k_nMaxLayers> frameFbIds = {};
 
 	// If we are modesetting, reset the state cache, we might
 	// move to another CRTC or whatever which might have differing caps.
@@ -2674,6 +2676,7 @@ drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, boo
 			const int nFence = cv_drm_debug_disable_in_fence_fd ? -1 : g_nAlwaysSignalledSyncFile;
 
 			liftoff_layer_set_property( drm->lo_layers[ i ], "FB_ID", pDrmFb->GetFbId());
+			frameFbIds[i] = pDrmFb->GetFbId();
 			liftoff_layer_set_property( drm->lo_layers[ i ], "IN_FENCE_FD", nFence );
 			drm_log.infof( "atomic probe prepare layer=%d fb=%u in_fence_fd=%d syncobjs=%d disable_in_fence=%d",
 				i,
@@ -2873,6 +2876,35 @@ drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, boo
 		// We don't support partial composition yet
 		if ( liftoff_output_needs_composition( drm->lo_output ) )
 			ret = -EINVAL;
+	}
+
+	if ( ret == 0 && gamescope::compositor_diagnostics::enabled() )
+	{
+		static std::atomic<uint64_t> s_frameProbeId = 0;
+		const uint64_t frameId = ++s_frameProbeId;
+		for ( int i = 0; i < frameInfo->layerCount; i++ )
+		{
+			const FrameInfo_t::Layer_t &layer = frameInfo->layers[i];
+			const uint32_t format = layer.tex ? layer.tex->drmFormat() : DRM_FORMAT_INVALID;
+			const uint64_t modifier = layer.tex ? layer.tex->dmabuf().modifier : DRM_FORMAT_MOD_INVALID;
+			struct liftoff_plane *plane = liftoff_layer_get_plane( drm->lo_layers[i] );
+			const uint32_t planeId = plane ? liftoff_plane_get_id( plane ) : 0;
+			drm_log.infof(
+				"frame probe id=%" PRIu64 " kind=%s layer=%d/%d plane=%u fb=%u "
+				"format=%c%c%c%c modifier=0x%" PRIx64 " src=0,0,%u,%u "
+				"crtc=%u,%u,%u,%u zpos=%u opacity=%u",
+				frameId,
+				gamescope::compositor_diagnostics::frame_kind( frameInfo->isNativeOutput ),
+				i, frameInfo->layerCount, planeId, frameFbIds[i],
+				char( format & 0xff ), char( ( format >> 8 ) & 0xff ),
+				char( ( format >> 16 ) & 0xff ), char( ( format >> 24 ) & 0xff ),
+				modifier,
+				entry.layerState[i].srcW, entry.layerState[i].srcH,
+				entry.layerState[i].crtcX, entry.layerState[i].crtcY,
+				entry.layerState[i].crtcW, entry.layerState[i].crtcH,
+				entry.layerState[i].zpos,
+				uint32_t( layer.opacity * 0xffff ) );
+		}
 	}
 
 	// If we aren't modesetting and we got -EINVAL, that means that we

@@ -96,6 +96,7 @@
 #include "commit.h"
 #include "reshade_effect_manager.hpp"
 #include "BufferMemo.h"
+#include "compositor_diagnostics.hpp"
 #include "Utils/Process.h"
 #include "Utils/Algorithm.h"
 
@@ -1394,6 +1395,8 @@ import_commit (
 	bool fifo )
 {
 	gamescope::Rc<commit_t> commit = new commit_t;
+	struct wlr_dmabuf_attributes diagnosticDmabuf = {0};
+	const bool diagnosticHasDmabuf = wlr_buffer_get_dmabuf( buf, &diagnosticDmabuf );
 
 	commit->win_seq = w->seq;
 	commit->surf = surf;
@@ -1417,6 +1420,11 @@ import_commit (
 	{
 		// Going from OwningRc -> Rc now.
 		commit->vulkanTex = pTexture;
+		if ( gamescope::compositor_diagnostics::enabled() )
+			xwm_log.infof( "surface probe event=import appid=%u buffer=%p kind=%s "
+				"size=%dx%d cached=1 success=1", w->appID, buf,
+				gamescope::compositor_diagnostics::buffer_kind( diagnosticHasDmabuf ),
+				buf->width, buf->height );
 		return commit;
 	}
 
@@ -1431,12 +1439,22 @@ import_commit (
 
 	if ( pOwnedTexture == nullptr ) {
 		// Failed to create Vulkan texture from Wayland buffer for some reason.
+		if ( gamescope::compositor_diagnostics::enabled() )
+			xwm_log.infof( "surface probe event=import appid=%u buffer=%p kind=%s "
+				"size=%dx%d cached=0 success=0", w->appID, buf,
+				gamescope::compositor_diagnostics::buffer_kind( diagnosticHasDmabuf ),
+				buf->width, buf->height );
 		return nullptr;
 	}
 
 	commit->vulkanTex = pOwnedTexture;
 
 	s_BufferMemos.MemoizeBuffer( buf, std::move( pOwnedTexture ) );
+	if ( gamescope::compositor_diagnostics::enabled() )
+		xwm_log.infof( "surface probe event=import appid=%u buffer=%p kind=%s "
+			"size=%dx%d cached=0 success=1", w->appID, buf,
+			gamescope::compositor_diagnostics::buffer_kind( diagnosticHasDmabuf ),
+			buf->width, buf->height );
 
 	return commit;
 }
@@ -4931,6 +4949,12 @@ map_win(xwayland_ctx_t* ctx, Window id, unsigned long sequence)
 	MakeFocusDirty();
 
 	set_wm_state( ctx, w->xwayland().id, ICCCM_NORMAL_STATE );
+	if ( gamescope::compositor_diagnostics::enabled() )
+	{
+		const auto &geometry = w->GetGeometry();
+		xwm_log.infof( "surface probe event=x-map xid=0x%lx appid=%u size=%dx%d sequence=%lu",
+			w->xwayland().id, w->appID, geometry.nWidth, geometry.nHeight, sequence );
+	}
 }
 
 static void
