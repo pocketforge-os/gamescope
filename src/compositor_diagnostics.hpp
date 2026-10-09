@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <cstdlib>
 
 namespace gamescope::compositor_diagnostics
@@ -25,6 +26,14 @@ constexpr const char *frame_kind( FramePath path )
 constexpr const char *buffer_kind( bool dmabuf )
 {
 	return dmabuf ? "dmabuf" : "shm-or-cpu";
+}
+
+// A complete property tuple is useful on bring-up, but printing it for every
+// 60 Hz commit obscures the events it is meant to diagnose. Eight successful
+// assignments cover the initial modeset and the rotating output-image set.
+constexpr bool should_log_atomic_properties( uint64_t frameId )
+{
+	return frameId >= 1 && frameId <= 8;
 }
 
 } // namespace gamescope::compositor_diagnostics

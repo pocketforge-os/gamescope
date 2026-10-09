@@ -276,6 +276,7 @@ namespace gamescope
 		uint64_t GetPendingValue() const { return m_ulPendingValue; }
 		uint64_t GetCurrentValue() const { return m_ulCurrentValue; }
 		uint64_t GetInitialValue() const { return m_ulInitialValue; }
+		uint32_t GetPropertyId() const { return m_uPropertyId; }
 		int SetPendingValue( drmModeAtomicReq *pRequest, uint64_t ulValue, bool bForce );
 
 		void OnCommit();
@@ -2905,6 +2906,81 @@ drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, boo
 				entry.layerState[i].crtcW, entry.layerState[i].crtcH,
 				entry.layerState[i].zpos,
 				uint32_t( layer.opacity * 0xffff ) );
+
+			if ( gamescope::compositor_diagnostics::should_log_atomic_properties( frameId ) && plane )
+			{
+				gamescope::CDRMPlane *pAssignedPlane = nullptr;
+				for ( const std::unique_ptr<gamescope::CDRMPlane> &pCandidate : drm->planes )
+				{
+					if ( pCandidate->GetObjectId() == planeId )
+					{
+						pAssignedPlane = pCandidate.get();
+						break;
+					}
+				}
+
+				if ( pAssignedPlane )
+				{
+					uint64_t ulDiagnosticOrientation = DRM_MODE_ROTATE_0;
+					if ( !frameInfo->isNativeOutput )
+					{
+						switch ( drm->pConnector->GetCurrentOrientation() )
+						{
+							default:
+							case GAMESCOPE_PANEL_ORIENTATION_0:
+								ulDiagnosticOrientation = DRM_MODE_ROTATE_0;
+								break;
+							case GAMESCOPE_PANEL_ORIENTATION_270:
+								ulDiagnosticOrientation = DRM_MODE_ROTATE_270;
+								break;
+							case GAMESCOPE_PANEL_ORIENTATION_90:
+								ulDiagnosticOrientation = DRM_MODE_ROTATE_90;
+								break;
+							case GAMESCOPE_PANEL_ORIENTATION_180:
+								ulDiagnosticOrientation = DRM_MODE_ROTATE_180;
+								break;
+						}
+					}
+
+					auto logProperty = [frameId, planeId]( const char *pszName,
+						const std::optional<gamescope::CDRMAtomicProperty> &property,
+						bool bIncluded, uint64_t ulValue )
+					{
+						drm_log.infof(
+							"atomic property probe id=%" PRIu64 " plane=%u name=%s property_id=%u included=%d value=%" PRIu64 " cached_current=%" PRIu64,
+							frameId, planeId, pszName,
+							property ? property->GetPropertyId() : 0,
+							bIncluded,
+							ulValue,
+							property ? property->GetCurrentValue() : 0 );
+					};
+
+					const auto &properties = pAssignedPlane->GetProperties();
+					const uint64_t ulAlpha = uint64_t( layer.opacity * 0xffff );
+					const bool bHasPixelBlend = entry.layerState[i].zpos != g_zposBase;
+					logProperty( "FB_ID", properties.FB_ID, true, frameFbIds[i] );
+					logProperty( "CRTC_ID", properties.CRTC_ID, true, drm->pCRTC->GetObjectId() );
+					logProperty( "SRC_X", properties.SRC_X, true, 0 );
+					logProperty( "SRC_Y", properties.SRC_Y, true, 0 );
+					logProperty( "SRC_W", properties.SRC_W, true, entry.layerState[i].srcW );
+					logProperty( "SRC_H", properties.SRC_H, true, entry.layerState[i].srcH );
+					logProperty( "CRTC_X", properties.CRTC_X, true, entry.layerState[i].crtcX );
+					logProperty( "CRTC_Y", properties.CRTC_Y, true, entry.layerState[i].crtcY );
+					logProperty( "CRTC_W", properties.CRTC_W, true, entry.layerState[i].crtcW );
+					logProperty( "CRTC_H", properties.CRTC_H, true, entry.layerState[i].crtcH );
+					logProperty( "zpos", properties.zpos, true, entry.layerState[i].zpos );
+					logProperty( "alpha", properties.alpha, true, ulAlpha );
+					logProperty( "pixel_blend_mode", properties.pixelBlendMode, bHasPixelBlend,
+						bHasPixelBlend ? uint64_t( layer.eAlphaBlendingMode ) : 0 );
+					logProperty( "rotation", properties.rotation, true, ulDiagnosticOrientation );
+					logProperty( "COLOR_ENCODING", properties.COLOR_ENCODING,
+						layer.applyColorMgmt && entry.layerState[i].ycbcr,
+						entry.layerState[i].colorEncoding );
+					logProperty( "COLOR_RANGE", properties.COLOR_RANGE,
+						layer.applyColorMgmt && entry.layerState[i].ycbcr,
+						entry.layerState[i].colorRange );
+				}
+			}
 		}
 	}
 
