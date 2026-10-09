@@ -41,6 +41,10 @@
 #include "main.hpp"
 #include "modegen.hpp"
 #include "rendervulkan.hpp"
+#include "drm_device_selection.hpp"
+#include "drm_commit_probe.hpp"
+#include "drm_format_selection.hpp"
+#include "compositor_diagnostics.hpp"
 #include "steamcompmgr.hpp"
 #include "vblankmanager.hpp"
 #include "wlserver.hpp"
@@ -272,6 +276,7 @@ namespace gamescope
 		uint64_t GetPendingValue() const { return m_ulPendingValue; }
 		uint64_t GetCurrentValue() const { return m_ulCurrentValue; }
 		uint64_t GetInitialValue() const { return m_ulInitialValue; }
+		uint32_t GetPropertyId() const { return m_uPropertyId; }
 		int SetPendingValue( drmModeAtomicReq *pRequest, uint64_t ulValue, bool bForce );
 
 		void OnCommit();
@@ -704,25 +709,19 @@ static bool get_plane_formats( struct drm_t *drm, gamescope::CDRMPlane *pPlane, 
 	return true;
 }
 
-static uint32_t pick_plane_format( const struct wlr_drm_format_set *formats, uint32_t Xformat, uint32_t Aformat )
+static std::vector<uint32_t> compatible_plane_formats( const struct wlr_drm_format_set *formats )
 {
-	uint32_t result = DRM_FORMAT_INVALID;
+	std::vector<uint32_t> result;
 	for ( size_t i = 0; i < formats->len; i++ ) {
 		const wlr_drm_format &planeFormat = formats->formats[i];
-		uint32_t fmt = planeFormat.format;
 
 		// Require one exact KMS/Vulkan modifier intersection, including either the
 		// combined compute usage or the same-format linear staging fallback.
-		if ( !vulkan_supports_output_format( fmt,
+		if ( !vulkan_supports_output_format( planeFormat.format,
 			std::span<const uint64_t>{ planeFormat.modifiers, planeFormat.len } ) )
 			continue;
 
-		if ( fmt == Xformat ) {
-			// Prefer formats without alpha channel for main plane
-			result = fmt;
-		} else if ( result == DRM_FORMAT_INVALID && fmt == Aformat ) {
-			result = fmt;
-		}
+		result.push_back( planeFormat.format );
 	}
 	return result;
 }
@@ -766,6 +765,15 @@ extern void mangoapp_output_update( uint64_t vblanktime );
 static void page_flip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec, unsigned int crtc_id, void *data)
 {
 	DRMPresentCtx *pCtx = reinterpret_cast<DRMPresentCtx *>( data );
+	const bool bLogProbe = gamescope::drm_commit_probe::shouldLog( pCtx->ulPendingFlipCount );
+	if ( bLogProbe )
+	{
+		drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s begin crtc=%u frame=%u",
+			pCtx->ulPendingFlipCount,
+			gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::PageFlipHandler ),
+			crtc_id,
+			frame );
+	}
 
 	// Make this const when we move into CDRMBackend.
 	GetBackend()->GetCurrentConnector()->PresentationFeedback().m_uCompletedPresents = pCtx->ulPendingFlipCount;
@@ -798,6 +806,13 @@ static void page_flip_handler(int fd, unsigned int frame, unsigned int sec, unsi
 
 	g_DRM.uPendingFlipCount--;
 	g_DRM.uPendingFlipCount.notify_all();
+	if ( bLogProbe )
+	{
+		drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s end pending=%u",
+			pCtx->ulPendingFlipCount,
+			gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::PageFlipHandler ),
+			g_DRM.uPendingFlipCount.load() );
+	}
 
 	mangoapp_output_update( vblanktime );
 
@@ -838,11 +853,25 @@ void flip_handler_thread_run(void)
 		}
 
 		if ( (fds[0].revents & POLLIN) ) {
+			static std::atomic<uint64_t> s_eventDispatchProbeId = 0;
+			const uint64_t uEventDispatchProbeId =
+				gamescope::drm_commit_probe::nextCapturedEvent( s_eventDispatchProbeId );
+			if ( uEventDispatchProbeId != 0 )
+			{
+				drm_log.infof( "atomic probe event-dispatch begin revents=0x%x pending=%u",
+					fds[0].revents,
+					g_DRM.uPendingFlipCount.load() );
+			}
 			drmEventContext evctx = {
 				.version = 3,
 				.page_flip_handler2 = page_flip_handler,
 			};
 			drmHandleEvent( g_DRM.fd, &evctx );
+			if ( uEventDispatchProbeId != 0 )
+			{
+				drm_log.infof( "atomic probe event-dispatch end pending=%u",
+					g_DRM.uPendingFlipCount.load() );
+			}
 		}
 	}
 
@@ -1265,16 +1294,31 @@ bool init_drm(struct drm_t *drm, int width, int height, int refresh)
 	drm->preferred_refresh = refresh;
 
 	drm->device_name = nullptr;
-	dev_t dev_id = 0;
-	if (vulkan_primary_dev_id(&dev_id)) {
-		drmDevice *drm_dev = nullptr;
-		if (drmGetDeviceFromDevId(dev_id, 0, &drm_dev) != 0) {
-			drm_log.errorf("Failed to find DRM device with device ID %" PRIu64, (uint64_t)dev_id);
-			return false;
+	std::string vulkan_primary_device;
+	if ( g_sPreferredDrmDevice == nullptr || g_sPreferredDrmDevice[0] == '\0' )
+	{
+		dev_t dev_id = 0;
+		if (vulkan_primary_dev_id(&dev_id)) {
+			drmDevice *drm_dev = nullptr;
+			if (drmGetDeviceFromDevId(dev_id, 0, &drm_dev) != 0) {
+				drm_log.errorf("Failed to find DRM device with device ID %" PRIu64, (uint64_t)dev_id);
+				return false;
+			}
+			assert(drm_dev->available_nodes & (1 << DRM_NODE_PRIMARY));
+			vulkan_primary_device = drm_dev->nodes[DRM_NODE_PRIMARY];
 		}
-		assert(drm_dev->available_nodes & (1 << DRM_NODE_PRIMARY));
-		drm->device_name = strdup(drm_dev->nodes[DRM_NODE_PRIMARY]);
-		drm_log.infof("opening DRM node '%s'", drm->device_name);
+	}
+
+	const gamescope::drm_device_selection::DeviceSelection device_selection =
+		gamescope::drm_device_selection::selectDevice(
+			g_sPreferredDrmDevice ? g_sPreferredDrmDevice : "", vulkan_primary_device );
+	if ( device_selection.source != gamescope::drm_device_selection::DeviceSource::Discovery )
+	{
+		drm->device_name = strdup( device_selection.path.c_str() );
+		if ( device_selection.source == gamescope::drm_device_selection::DeviceSource::Preferred )
+			drm_log.infof( "using preferred DRM/KMS device '%s'", drm->device_name );
+		else
+			drm_log.infof("opening DRM node '%s'", drm->device_name);
 	}
 	else
 	{
@@ -1401,45 +1445,24 @@ bool init_drm(struct drm_t *drm, int width, int height, int refresh)
 	// 2. When compositing HDR content as a fallback when we undock, it avoids introducing
 	// a bunch of horrible banding when going to G2.2 curve.
 	// It ensures that we can dither that.
-	g_nDRMFormat = pick_plane_format(&drm->primary_formats, DRM_FORMAT_XRGB2101010, DRM_FORMAT_ARGB2101010);
+	const std::vector<uint32_t> primaryOutputFormats = compatible_plane_formats( &drm->primary_formats );
+	g_nDRMFormat = gamescope::drm_format_selection::selectPrimary( primaryOutputFormats );
 	if ( g_nDRMFormat == DRM_FORMAT_INVALID ) {
-		g_nDRMFormat = pick_plane_format(&drm->primary_formats, DRM_FORMAT_XBGR2101010, DRM_FORMAT_ABGR2101010);
-		if ( g_nDRMFormat == DRM_FORMAT_INVALID ) {
-			g_nDRMFormat = pick_plane_format(&drm->primary_formats, DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888);
-			if ( g_nDRMFormat == DRM_FORMAT_INVALID ) {
-				drm_log.errorf("Primary plane doesn't support any formats >= 8888");
-				return false;
-			}
-		}
+		drm_log.errorf("Primary plane doesn't support any formats >= 8888");
+		return false;
 	}
 
 	if (have_overlay_planes(drm)) {
-		// ARGB8888 is the Xformat and AFormat here in this function as we want transparent overlay
-		g_nDRMFormatOverlay = pick_plane_format(&drm->formats, DRM_FORMAT_ARGB2101010, DRM_FORMAT_ARGB2101010);
+		const std::vector<uint32_t> overlayOutputFormats = compatible_plane_formats( &drm->formats );
+		g_nDRMFormatOverlay = gamescope::drm_format_selection::selectOverlay( overlayOutputFormats );
 		if ( g_nDRMFormatOverlay == DRM_FORMAT_INVALID ) {
-			g_nDRMFormatOverlay = pick_plane_format(&drm->formats, DRM_FORMAT_ABGR2101010, DRM_FORMAT_ABGR2101010);
-			if ( g_nDRMFormatOverlay == DRM_FORMAT_INVALID ) {
-				g_nDRMFormatOverlay = pick_plane_format(&drm->formats, DRM_FORMAT_ARGB8888, DRM_FORMAT_ARGB8888);
-				if ( g_nDRMFormatOverlay == DRM_FORMAT_INVALID ) {
-					drm_log.errorf("Overlay plane doesn't support any formats >= 8888");
-					return false;
-				}
-			}
-		}
-	} else {
-		switch (g_nDRMFormat) {
-		case DRM_FORMAT_XRGB2101010:
-			g_nDRMFormatOverlay = DRM_FORMAT_ARGB2101010;
-			break;
-		case DRM_FORMAT_ABGR2101010:
-			g_nDRMFormatOverlay = DRM_FORMAT_ABGR2101010;
-			break;
-		case DRM_FORMAT_XRGB8888:
-			g_nDRMFormatOverlay = DRM_FORMAT_ARGB8888;
-			break;
-		default:
+			drm_log.errorf("Overlay plane doesn't support any formats >= 8888");
 			return false;
 		}
+	} else {
+		g_nDRMFormatOverlay = gamescope::drm_format_selection::alphaEquivalent( g_nDRMFormat );
+		if ( g_nDRMFormatOverlay == DRM_FORMAT_INVALID )
+			return false;
 	}
 
 	// Create a pipe to wake the flip handler poll for immediate exit.
@@ -2635,9 +2658,11 @@ namespace gamescope
 }
 
 static int
-drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, bool needs_modeset )
+drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, bool needs_modeset,
+	gamescope::compositor_diagnostics::FramePath framePath )
 {
 	auto entry = FrameInfoToLiftoffStateCacheEntry( drm, frameInfo );
+	std::array<uint32_t, k_nMaxLayers> frameFbIds = {};
 
 	// If we are modesetting, reset the state cache, we might
 	// move to another CRTC or whatever which might have differing caps.
@@ -2668,9 +2693,19 @@ drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, boo
 
 			const int nFence = cv_drm_debug_disable_in_fence_fd ? -1 : g_nAlwaysSignalledSyncFile;
 
-
 			liftoff_layer_set_property( drm->lo_layers[ i ], "FB_ID", pDrmFb->GetFbId());
+			frameFbIds[i] = pDrmFb->GetFbId();
 			liftoff_layer_set_property( drm->lo_layers[ i ], "IN_FENCE_FD", nFence );
+			static std::atomic<uint64_t> s_prepareProbeId = 0;
+			if ( gamescope::drm_commit_probe::nextCapturedEvent( s_prepareProbeId ) != 0 )
+			{
+				drm_log.infof( "atomic probe prepare layer=%d fb=%u in_fence_fd=%d syncobjs=%d disable_in_fence=%d",
+					i,
+					pDrmFb->GetFbId(),
+					nFence,
+					g_bSupportsSyncObjs,
+					bool( cv_drm_debug_disable_in_fence_fd ) );
+			}
 			drm->m_FbIdsInRequest.emplace_back( pDrmFb );
 
 			liftoff_layer_set_property( drm->lo_layers[ i ], "zpos", entry.layerState[i].zpos );
@@ -2865,6 +2900,110 @@ drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, boo
 			ret = -EINVAL;
 	}
 
+	if ( ret == 0 && gamescope::compositor_diagnostics::enabled() )
+	{
+		static std::atomic<uint64_t> s_frameProbeId = 0;
+		const uint64_t frameId = ++s_frameProbeId;
+		for ( int i = 0; i < frameInfo->layerCount; i++ )
+		{
+			const FrameInfo_t::Layer_t &layer = frameInfo->layers[i];
+			const uint32_t format = layer.tex ? layer.tex->drmFormat() : DRM_FORMAT_INVALID;
+			const uint64_t modifier = layer.tex ? layer.tex->dmabuf().modifier : DRM_FORMAT_MOD_INVALID;
+			struct liftoff_plane *plane = liftoff_layer_get_plane( drm->lo_layers[i] );
+			const uint32_t planeId = plane ? liftoff_plane_get_id( plane ) : 0;
+			drm_log.infof(
+				"frame probe id=%" PRIu64 " kind=%s layer=%d/%d plane=%u fb=%u "
+				"format=%c%c%c%c modifier=0x%" PRIx64 " src=0,0,%u,%u "
+				"crtc=%u,%u,%u,%u zpos=%u opacity=%u",
+				frameId,
+				gamescope::compositor_diagnostics::frame_kind( framePath ),
+				i, frameInfo->layerCount, planeId, frameFbIds[i],
+				char( format & 0xff ), char( ( format >> 8 ) & 0xff ),
+				char( ( format >> 16 ) & 0xff ), char( ( format >> 24 ) & 0xff ),
+				modifier,
+				entry.layerState[i].srcW, entry.layerState[i].srcH,
+				entry.layerState[i].crtcX, entry.layerState[i].crtcY,
+				entry.layerState[i].crtcW, entry.layerState[i].crtcH,
+				entry.layerState[i].zpos,
+				uint32_t( layer.opacity * 0xffff ) );
+
+			if ( gamescope::compositor_diagnostics::should_log_atomic_properties( frameId ) && plane )
+			{
+				gamescope::CDRMPlane *pAssignedPlane = nullptr;
+				for ( const std::unique_ptr<gamescope::CDRMPlane> &pCandidate : drm->planes )
+				{
+					if ( pCandidate->GetObjectId() == planeId )
+					{
+						pAssignedPlane = pCandidate.get();
+						break;
+					}
+				}
+
+				if ( pAssignedPlane )
+				{
+					uint64_t ulDiagnosticOrientation = DRM_MODE_ROTATE_0;
+					if ( !frameInfo->isNativeOutput )
+					{
+						switch ( drm->pConnector->GetCurrentOrientation() )
+						{
+							default:
+							case GAMESCOPE_PANEL_ORIENTATION_0:
+								ulDiagnosticOrientation = DRM_MODE_ROTATE_0;
+								break;
+							case GAMESCOPE_PANEL_ORIENTATION_270:
+								ulDiagnosticOrientation = DRM_MODE_ROTATE_270;
+								break;
+							case GAMESCOPE_PANEL_ORIENTATION_90:
+								ulDiagnosticOrientation = DRM_MODE_ROTATE_90;
+								break;
+							case GAMESCOPE_PANEL_ORIENTATION_180:
+								ulDiagnosticOrientation = DRM_MODE_ROTATE_180;
+								break;
+						}
+					}
+
+					auto logProperty = [frameId, planeId]( const char *pszName,
+						const std::optional<gamescope::CDRMAtomicProperty> &property,
+						bool bIncluded, uint64_t ulValue )
+					{
+						drm_log.infof(
+							"atomic property probe id=%" PRIu64 " plane=%u name=%s property_id=%u included=%d value=%" PRIu64 " cached_current=%" PRIu64,
+							frameId, planeId, pszName,
+							property ? property->GetPropertyId() : 0,
+							bIncluded,
+							ulValue,
+							property ? property->GetCurrentValue() : 0 );
+					};
+
+					const auto &properties = pAssignedPlane->GetProperties();
+					const uint64_t ulAlpha = uint64_t( layer.opacity * 0xffff );
+					const bool bHasPixelBlend = entry.layerState[i].zpos != g_zposBase;
+					logProperty( "FB_ID", properties.FB_ID, true, frameFbIds[i] );
+					logProperty( "CRTC_ID", properties.CRTC_ID, true, drm->pCRTC->GetObjectId() );
+					logProperty( "SRC_X", properties.SRC_X, true, 0 );
+					logProperty( "SRC_Y", properties.SRC_Y, true, 0 );
+					logProperty( "SRC_W", properties.SRC_W, true, entry.layerState[i].srcW );
+					logProperty( "SRC_H", properties.SRC_H, true, entry.layerState[i].srcH );
+					logProperty( "CRTC_X", properties.CRTC_X, true, entry.layerState[i].crtcX );
+					logProperty( "CRTC_Y", properties.CRTC_Y, true, entry.layerState[i].crtcY );
+					logProperty( "CRTC_W", properties.CRTC_W, true, entry.layerState[i].crtcW );
+					logProperty( "CRTC_H", properties.CRTC_H, true, entry.layerState[i].crtcH );
+					logProperty( "zpos", properties.zpos, true, entry.layerState[i].zpos );
+					logProperty( "alpha", properties.alpha, true, ulAlpha );
+					logProperty( "pixel_blend_mode", properties.pixelBlendMode, bHasPixelBlend,
+						bHasPixelBlend ? uint64_t( layer.eAlphaBlendingMode ) : 0 );
+					logProperty( "rotation", properties.rotation, true, ulDiagnosticOrientation );
+					logProperty( "COLOR_ENCODING", properties.COLOR_ENCODING,
+						layer.applyColorMgmt && entry.layerState[i].ycbcr,
+						entry.layerState[i].colorEncoding );
+					logProperty( "COLOR_RANGE", properties.COLOR_RANGE,
+						layer.applyColorMgmt && entry.layerState[i].ycbcr,
+						entry.layerState[i].colorRange );
+				}
+			}
+		}
+	}
+
 	// If we aren't modesetting and we got -EINVAL, that means that we
 	// probably can't do this layout, so add it to our state cache so we don't
 	// try it again.
@@ -2968,7 +3107,8 @@ static void drm_unlink_foreign_planes( struct drm_t *drm )
 
 /* Prepares an atomic commit for the provided scene-graph. Returns 0 on success,
  * negative errno on failure or if the scene-graph can't be presented directly. */
-int drm_prepare( struct drm_t *drm, bool async, const struct FrameInfo_t *frameInfo )
+int drm_prepare( struct drm_t *drm, bool async, const struct FrameInfo_t *frameInfo,
+	gamescope::compositor_diagnostics::FramePath framePath )
 {
 	if ( !drm->pConnector )
 		return -EACCES;
@@ -3185,7 +3325,7 @@ int drm_prepare( struct drm_t *drm, bool async, const struct FrameInfo_t *frameI
 	if ( drm->pCRTC == nullptr || bSleep ) {
 		ret = 0;
 	} else if ( drm->bUseLiftoff ) {
-		ret = drm_prepare_liftoff( drm, frameInfo, needs_modeset );
+		ret = drm_prepare_liftoff( drm, frameInfo, needs_modeset, framePath );
 	} else {
 		ret = 0;
 	}
@@ -3697,7 +3837,8 @@ namespace gamescope
 				// Save the pending mode so it can be restored after drm_rollback() and carried
 				// over to the composite path
 				std::shared_ptr<gamescope::BackendBlob> pPendingModeId = g_DRM.pending.mode_id;
-				int ret = drm_prepare( &g_DRM, bAsync, pDirectFrameInfo );
+				int ret = drm_prepare( &g_DRM, bAsync, pDirectFrameInfo,
+					gamescope::compositor_diagnostics::FramePath::Direct );
 				if ( ret == 0 )
 					bDoComposite = false;
 				else if ( ret == -EACCES )
@@ -3894,7 +4035,8 @@ namespace gamescope
 				m_bWasPartialCompositing = true;
 			}
 
-			int ret = drm_prepare( &g_DRM, bAsync, &presentCompFrameInfo );
+			int ret = drm_prepare( &g_DRM, bAsync, &presentCompFrameInfo,
+				gamescope::compositor_diagnostics::FramePath::Composited );
 
 			// Happens when we're VT-switched away
 			if ( ret == -EACCES )
@@ -3918,7 +4060,8 @@ namespace gamescope
 				xwm_log.errorf("Failed to prepare 1-layer flip (%s), trying again with previous mode if modeset needed", strerror( -ret ));
 
 				// Try once again to in case we need to fall back to another mode.
-				ret = drm_prepare( &g_DRM, bAsync, &compositeFrameInfo );
+				ret = drm_prepare( &g_DRM, bAsync, &compositeFrameInfo,
+					gamescope::compositor_diagnostics::FramePath::Composited );
 
 				// Happens when we're VT-switched away
 				if ( ret == -EACCES )
@@ -4377,7 +4520,33 @@ namespace gamescope
 			drm_log.debugf("flip commit %" PRIu64, (uint64_t)GetCurrentConnector()->PresentationFeedback().m_uQueuedPresents);
 			gpuvis_trace_printf( "flip commit %" PRIu64, (uint64_t)GetCurrentConnector()->PresentationFeedback().m_uQueuedPresents );
 
+			const uint64_t uProbeId = m_PresentCtxs[uCurrentPresentCtx].ulPendingFlipCount;
+			const bool bLogProbe = gamescope::drm_commit_probe::shouldLog( uProbeId );
+			const uint64_t uSubmitBegin = bLogProbe ? get_time_in_nanos() : 0;
+			if ( bLogProbe )
+			{
+				drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s begin flags=0x%x nonblock=%d page_flip_event=%d allow_modeset=%d pending=%u",
+					uProbeId,
+					gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::Submit ),
+					drm->flags,
+					bool( drm->flags & DRM_MODE_ATOMIC_NONBLOCK ),
+					bool( drm->flags & DRM_MODE_PAGE_FLIP_EVENT ),
+					bool( drm->flags & DRM_MODE_ATOMIC_ALLOW_MODESET ),
+					drm->uPendingFlipCount.load() );
+			}
+			errno = 0;
 			ret = drmModeAtomicCommit(drm->fd, drm->req, drm->flags, &m_PresentCtxs[uCurrentPresentCtx] );
+			const int nSubmitErrno = errno;
+			if ( bLogProbe )
+			{
+				drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s end ret=%d errno=%d elapsed_us=%" PRIu64,
+					uProbeId,
+					gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::Submit ),
+					ret,
+					nSubmitErrno,
+					( get_time_in_nanos() - uSubmitBegin ) / 1'000 );
+			}
+			errno = nSubmitErrno;
 			if ( ret != 0 )
 			{
 				drm_log.errorf_errno( "flip error" );
@@ -4453,8 +4622,29 @@ namespace gamescope
 			if ( isPageFlip )
 			{
 				// Wait for bPendingFlip to change from true -> false.
+				if ( bLogProbe )
+				{
+					drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s begin pending=%u",
+						uProbeId,
+						gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::WaitForPageFlip ),
+						drm->uPendingFlipCount.load() );
+				}
 				drm->uPendingFlipCount.wait( uNewPendingFlipCount );
+				if ( bLogProbe )
+				{
+					drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s end pending=%u",
+						uProbeId,
+						gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::WaitForPageFlip ),
+						drm->uPendingFlipCount.load() );
+				}
 				assert( drm->uPendingFlipCount == 0 );
+			}
+
+			if ( bLogProbe )
+			{
+				drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s",
+					uProbeId,
+					gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::Complete ) );
 			}
 
 			return ret;
