@@ -21,10 +21,12 @@ same-size statements below only while that transform is active.
 
 Output allocation selects one mode per output format:
 
-1. **Combined** keeps the existing path. Each ring image is exportable and
-   flippable, and its selected DRM modifier supports `SAMPLED_IMAGE`,
-   `STORAGE_IMAGE`, and `TRANSFER_SRC`. The compute compositor writes that image
-   directly.
+1. **Combined** keeps the existing path for non-linear DRM modifiers. Each ring
+   image is exportable and flippable, and its selected DRM modifier supports
+   `SAMPLED_IMAGE`, `STORAGE_IMAGE`, and `TRANSFER_SRC`. The compute compositor
+   writes that image directly.
+   `DRM_FORMAT_MOD_LINEAR` is deliberately excluded even if a driver advertises
+   storage-image support for it, so compute never writes a linear scanout image.
 2. **Staged** owns two same-sized, same-format rings. The composition ring uses
    optimal tiling and `SAMPLED | STORAGE | TRANSFER_SRC`. The scanout ring uses
    the explicit `DRM_FORMAT_MOD_LINEAR` modifier and
@@ -143,10 +145,11 @@ combined frame advances only `composition_dispatches`.
 ## Errors and fallback policy
 
 Capability probing is deterministic and side-effect free. Allocation attempts
-combined mode first, then staged mode only when its complete eligibility check
-passes. A rejected modifier, unsupported usage, export failure, framebuffer
-import failure, format mismatch, or partial ring allocation failure tears down
-the incomplete candidate and reports one precise error.
+combined mode first for non-linear modifiers, then staged mode only when its
+complete eligibility check passes. A rejected modifier, unsupported usage,
+export failure, framebuffer import failure, format mismatch, or partial ring
+allocation failure tears down the incomplete candidate and reports one precise
+error.
 
 There is no per-frame fallback from a failed copy to stale output, CPU copy, or
 an unverified modifier. If neither combined nor staged allocation can construct
@@ -160,7 +163,8 @@ Deterministic unit tests exercise a Vulkan-independent planner and state model:
 
 - exact format and modifier intersection, including wrong-plane, wrong-format,
   missing-linear, and missing-usage rejection;
-- combined preference and staged eligibility;
+- tiled-combined preference, forced staging for linear scanout, and staged
+  eligibility;
 - resource-pair/ring invariants and no index advance after failure;
 - barrier/ownership order and first-use discard versus reuse acquisition;
 - counter behavior for direct, combined, staged, and failed frames;

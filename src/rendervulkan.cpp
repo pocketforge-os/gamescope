@@ -3538,6 +3538,18 @@ static const char *outputPlanRejectionName( gamescope::output_staging::Rejection
 	return "unknown";
 }
 
+static const char *outputPlanModeName( gamescope::output_staging::OutputMode mode )
+{
+	using gamescope::output_staging::OutputMode;
+	switch ( mode )
+	{
+		case OutputMode::Unsupported: return "unsupported";
+		case OutputMode::Combined: return "combined";
+		case OutputMode::Staged: return "staged";
+	}
+	return "unknown";
+}
+
 static bool allocateOutputRingForPlan(
 	uint32_t drmFormat,
 	const gamescope::output_staging::OutputPlan &plan,
@@ -3651,7 +3663,11 @@ static bool allocateOutputRing(
 	}
 
 	if ( allocateOutputRingForPlan( drmFormat, plan, transform, pReuse, pCandidate ) )
+	{
+		vk_log.infof( "output plan accepted format=0x%x mode=%s modifier=0x%" PRIx64,
+			drmFormat, outputPlanModeName( plan.mode ), plan.modifier );
 		return true;
+	}
 
 	if ( plan.mode == OutputMode::Combined )
 	{
@@ -3659,7 +3675,11 @@ static bool allocateOutputRing(
 		plan = makeOutputPlan( drmFormat, kmsModifiers, false );
 		if ( plan.mode == OutputMode::Staged &&
 			allocateOutputRingForPlan( drmFormat, plan, transform, nullptr, pCandidate ) )
+		{
+			vk_log.infof( "output plan accepted format=0x%x mode=%s modifier=0x%" PRIx64,
+				drmFormat, outputPlanModeName( plan.mode ), plan.modifier );
 			return true;
+		}
 	}
 
 	vk_log.errorf( "failed to allocate complete output ring for format 0x%x: %s", drmFormat, outputPlanRejectionName( plan.rejection ) );
