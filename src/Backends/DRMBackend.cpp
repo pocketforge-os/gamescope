@@ -765,11 +765,15 @@ extern void mangoapp_output_update( uint64_t vblanktime );
 static void page_flip_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec, unsigned int crtc_id, void *data)
 {
 	DRMPresentCtx *pCtx = reinterpret_cast<DRMPresentCtx *>( data );
-	drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s begin crtc=%u frame=%u",
-		pCtx->ulPendingFlipCount,
-		gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::PageFlipHandler ),
-		crtc_id,
-		frame );
+	const bool bLogProbe = gamescope::drm_commit_probe::shouldLog( pCtx->ulPendingFlipCount );
+	if ( bLogProbe )
+	{
+		drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s begin crtc=%u frame=%u",
+			pCtx->ulPendingFlipCount,
+			gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::PageFlipHandler ),
+			crtc_id,
+			frame );
+	}
 
 	// Make this const when we move into CDRMBackend.
 	GetBackend()->GetCurrentConnector()->PresentationFeedback().m_uCompletedPresents = pCtx->ulPendingFlipCount;
@@ -802,10 +806,13 @@ static void page_flip_handler(int fd, unsigned int frame, unsigned int sec, unsi
 
 	g_DRM.uPendingFlipCount--;
 	g_DRM.uPendingFlipCount.notify_all();
-	drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s end pending=%u",
-		pCtx->ulPendingFlipCount,
-		gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::PageFlipHandler ),
-		g_DRM.uPendingFlipCount.load() );
+	if ( bLogProbe )
+	{
+		drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s end pending=%u",
+			pCtx->ulPendingFlipCount,
+			gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::PageFlipHandler ),
+			g_DRM.uPendingFlipCount.load() );
+	}
 
 	mangoapp_output_update( vblanktime );
 
@@ -846,16 +853,25 @@ void flip_handler_thread_run(void)
 		}
 
 		if ( (fds[0].revents & POLLIN) ) {
-			drm_log.infof( "atomic probe event-dispatch begin revents=0x%x pending=%u",
-				fds[0].revents,
-				g_DRM.uPendingFlipCount.load() );
+			static std::atomic<uint64_t> s_eventDispatchProbeId = 0;
+			const uint64_t uEventDispatchProbeId =
+				gamescope::drm_commit_probe::nextCapturedEvent( s_eventDispatchProbeId );
+			if ( uEventDispatchProbeId != 0 )
+			{
+				drm_log.infof( "atomic probe event-dispatch begin revents=0x%x pending=%u",
+					fds[0].revents,
+					g_DRM.uPendingFlipCount.load() );
+			}
 			drmEventContext evctx = {
 				.version = 3,
 				.page_flip_handler2 = page_flip_handler,
 			};
 			drmHandleEvent( g_DRM.fd, &evctx );
-			drm_log.infof( "atomic probe event-dispatch end pending=%u",
-				g_DRM.uPendingFlipCount.load() );
+			if ( uEventDispatchProbeId != 0 )
+			{
+				drm_log.infof( "atomic probe event-dispatch end pending=%u",
+					g_DRM.uPendingFlipCount.load() );
+			}
 		}
 	}
 
@@ -2680,12 +2696,16 @@ drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, boo
 			liftoff_layer_set_property( drm->lo_layers[ i ], "FB_ID", pDrmFb->GetFbId());
 			frameFbIds[i] = pDrmFb->GetFbId();
 			liftoff_layer_set_property( drm->lo_layers[ i ], "IN_FENCE_FD", nFence );
-			drm_log.infof( "atomic probe prepare layer=%d fb=%u in_fence_fd=%d syncobjs=%d disable_in_fence=%d",
-				i,
-				pDrmFb->GetFbId(),
-				nFence,
-				g_bSupportsSyncObjs,
-				bool( cv_drm_debug_disable_in_fence_fd ) );
+			static std::atomic<uint64_t> s_prepareProbeId = 0;
+			if ( gamescope::drm_commit_probe::nextCapturedEvent( s_prepareProbeId ) != 0 )
+			{
+				drm_log.infof( "atomic probe prepare layer=%d fb=%u in_fence_fd=%d syncobjs=%d disable_in_fence=%d",
+					i,
+					pDrmFb->GetFbId(),
+					nFence,
+					g_bSupportsSyncObjs,
+					bool( cv_drm_debug_disable_in_fence_fd ) );
+			}
 			drm->m_FbIdsInRequest.emplace_back( pDrmFb );
 
 			liftoff_layer_set_property( drm->lo_layers[ i ], "zpos", entry.layerState[i].zpos );
@@ -4501,24 +4521,31 @@ namespace gamescope
 			gpuvis_trace_printf( "flip commit %" PRIu64, (uint64_t)GetCurrentConnector()->PresentationFeedback().m_uQueuedPresents );
 
 			const uint64_t uProbeId = m_PresentCtxs[uCurrentPresentCtx].ulPendingFlipCount;
-			const uint64_t uSubmitBegin = get_time_in_nanos();
-			drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s begin flags=0x%x nonblock=%d page_flip_event=%d allow_modeset=%d pending=%u",
-				uProbeId,
-				gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::Submit ),
-				drm->flags,
-				bool( drm->flags & DRM_MODE_ATOMIC_NONBLOCK ),
-				bool( drm->flags & DRM_MODE_PAGE_FLIP_EVENT ),
-				bool( drm->flags & DRM_MODE_ATOMIC_ALLOW_MODESET ),
-				drm->uPendingFlipCount.load() );
+			const bool bLogProbe = gamescope::drm_commit_probe::shouldLog( uProbeId );
+			const uint64_t uSubmitBegin = bLogProbe ? get_time_in_nanos() : 0;
+			if ( bLogProbe )
+			{
+				drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s begin flags=0x%x nonblock=%d page_flip_event=%d allow_modeset=%d pending=%u",
+					uProbeId,
+					gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::Submit ),
+					drm->flags,
+					bool( drm->flags & DRM_MODE_ATOMIC_NONBLOCK ),
+					bool( drm->flags & DRM_MODE_PAGE_FLIP_EVENT ),
+					bool( drm->flags & DRM_MODE_ATOMIC_ALLOW_MODESET ),
+					drm->uPendingFlipCount.load() );
+			}
 			errno = 0;
 			ret = drmModeAtomicCommit(drm->fd, drm->req, drm->flags, &m_PresentCtxs[uCurrentPresentCtx] );
 			const int nSubmitErrno = errno;
-			drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s end ret=%d errno=%d elapsed_us=%" PRIu64,
-				uProbeId,
-				gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::Submit ),
-				ret,
-				nSubmitErrno,
-				( get_time_in_nanos() - uSubmitBegin ) / 1'000 );
+			if ( bLogProbe )
+			{
+				drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s end ret=%d errno=%d elapsed_us=%" PRIu64,
+					uProbeId,
+					gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::Submit ),
+					ret,
+					nSubmitErrno,
+					( get_time_in_nanos() - uSubmitBegin ) / 1'000 );
+			}
 			errno = nSubmitErrno;
 			if ( ret != 0 )
 			{
@@ -4595,21 +4622,30 @@ namespace gamescope
 			if ( isPageFlip )
 			{
 				// Wait for bPendingFlip to change from true -> false.
-				drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s begin pending=%u",
-					uProbeId,
-					gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::WaitForPageFlip ),
-					drm->uPendingFlipCount.load() );
+				if ( bLogProbe )
+				{
+					drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s begin pending=%u",
+						uProbeId,
+						gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::WaitForPageFlip ),
+						drm->uPendingFlipCount.load() );
+				}
 				drm->uPendingFlipCount.wait( uNewPendingFlipCount );
-				drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s end pending=%u",
-					uProbeId,
-					gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::WaitForPageFlip ),
-					drm->uPendingFlipCount.load() );
+				if ( bLogProbe )
+				{
+					drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s end pending=%u",
+						uProbeId,
+						gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::WaitForPageFlip ),
+						drm->uPendingFlipCount.load() );
+				}
 				assert( drm->uPendingFlipCount == 0 );
 			}
 
-			drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s",
-				uProbeId,
-				gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::Complete ) );
+			if ( bLogProbe )
+			{
+				drm_log.infof( "atomic probe id=%" PRIu64 " phase=%s",
+					uProbeId,
+					gamescope::drm_commit_probe::phaseName( gamescope::drm_commit_probe::Phase::Complete ) );
+			}
 
 			return ret;
 		}
