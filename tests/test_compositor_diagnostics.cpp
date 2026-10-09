@@ -8,8 +8,8 @@ int main()
 {
 	using namespace gamescope::compositor_diagnostics;
 
-	assert( std::string_view( frame_kind( false ) ) == "composited" );
-	assert( std::string_view( frame_kind( true ) ) == "direct" );
+	assert( std::string_view( frame_kind( FramePath::Composited ) ) == "composited" );
+	assert( std::string_view( frame_kind( FramePath::Direct ) ) == "direct" );
 	assert( std::string_view( buffer_kind( true ) ) == "dmabuf" );
 	assert( std::string_view( buffer_kind( false ) ) == "shm-or-cpu" );
 

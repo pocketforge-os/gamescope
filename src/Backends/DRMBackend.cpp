@@ -2641,7 +2641,8 @@ namespace gamescope
 }
 
 static int
-drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, bool needs_modeset )
+drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, bool needs_modeset,
+	gamescope::compositor_diagnostics::FramePath framePath )
 {
 	auto entry = FrameInfoToLiftoffStateCacheEntry( drm, frameInfo );
 	std::array<uint32_t, k_nMaxLayers> frameFbIds = {};
@@ -2894,7 +2895,7 @@ drm_prepare_liftoff( struct drm_t *drm, const struct FrameInfo_t *frameInfo, boo
 				"format=%c%c%c%c modifier=0x%" PRIx64 " src=0,0,%u,%u "
 				"crtc=%u,%u,%u,%u zpos=%u opacity=%u",
 				frameId,
-				gamescope::compositor_diagnostics::frame_kind( frameInfo->isNativeOutput ),
+				gamescope::compositor_diagnostics::frame_kind( framePath ),
 				i, frameInfo->layerCount, planeId, frameFbIds[i],
 				char( format & 0xff ), char( ( format >> 8 ) & 0xff ),
 				char( ( format >> 16 ) & 0xff ), char( ( format >> 24 ) & 0xff ),
@@ -3010,7 +3011,8 @@ static void drm_unlink_foreign_planes( struct drm_t *drm )
 
 /* Prepares an atomic commit for the provided scene-graph. Returns 0 on success,
  * negative errno on failure or if the scene-graph can't be presented directly. */
-int drm_prepare( struct drm_t *drm, bool async, const struct FrameInfo_t *frameInfo )
+int drm_prepare( struct drm_t *drm, bool async, const struct FrameInfo_t *frameInfo,
+	gamescope::compositor_diagnostics::FramePath framePath )
 {
 	if ( !drm->pConnector )
 		return -EACCES;
@@ -3227,7 +3229,7 @@ int drm_prepare( struct drm_t *drm, bool async, const struct FrameInfo_t *frameI
 	if ( drm->pCRTC == nullptr || bSleep ) {
 		ret = 0;
 	} else if ( drm->bUseLiftoff ) {
-		ret = drm_prepare_liftoff( drm, frameInfo, needs_modeset );
+		ret = drm_prepare_liftoff( drm, frameInfo, needs_modeset, framePath );
 	} else {
 		ret = 0;
 	}
@@ -3739,7 +3741,8 @@ namespace gamescope
 				// Save the pending mode so it can be restored after drm_rollback() and carried
 				// over to the composite path
 				std::shared_ptr<gamescope::BackendBlob> pPendingModeId = g_DRM.pending.mode_id;
-				int ret = drm_prepare( &g_DRM, bAsync, pDirectFrameInfo );
+				int ret = drm_prepare( &g_DRM, bAsync, pDirectFrameInfo,
+					gamescope::compositor_diagnostics::FramePath::Direct );
 				if ( ret == 0 )
 					bDoComposite = false;
 				else if ( ret == -EACCES )
@@ -3936,7 +3939,8 @@ namespace gamescope
 				m_bWasPartialCompositing = true;
 			}
 
-			int ret = drm_prepare( &g_DRM, bAsync, &presentCompFrameInfo );
+			int ret = drm_prepare( &g_DRM, bAsync, &presentCompFrameInfo,
+				gamescope::compositor_diagnostics::FramePath::Composited );
 
 			// Happens when we're VT-switched away
 			if ( ret == -EACCES )
@@ -3960,7 +3964,8 @@ namespace gamescope
 				xwm_log.errorf("Failed to prepare 1-layer flip (%s), trying again with previous mode if modeset needed", strerror( -ret ));
 
 				// Try once again to in case we need to fall back to another mode.
-				ret = drm_prepare( &g_DRM, bAsync, &compositeFrameInfo );
+				ret = drm_prepare( &g_DRM, bAsync, &compositeFrameInfo,
+					gamescope::compositor_diagnostics::FramePath::Composited );
 
 				// Happens when we're VT-switched away
 				if ( ret == -EACCES )
