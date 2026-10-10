@@ -20,6 +20,7 @@
 #include "output_rotation.hpp"
 #include "output_staging.hpp"
 #include "pipeline_compile_probe.hpp"
+#include "mapped_image_origin.hpp"
 
 #include "shaders/descriptor_set_constants.h"
 
@@ -186,7 +187,8 @@ public:
 	inline VkMemoryPropertyFlags mappedMemoryProperties() const { return m_mappedMemoryProperties; }
 	inline gamescope::IBackendFb* GetBackendFb() { return m_pBackendFb.get(); }
 	inline uint8_t *mappedAllocationData() { return m_pMappedData; }
-	inline uint8_t *mappedData() { return m_pMappedData ? m_pMappedData + m_unMappedOffset : nullptr; }
+	inline uint8_t *mappedData() { return gamescope::mapped_image_origin( m_pMappedData, m_unMappedOffset, false ); }
+	inline uint8_t *mappedPlaneData() { return gamescope::mapped_image_origin( m_pMappedData, m_unMappedOffset, true ); }
 	inline VkFormat format() const { return m_format; }
 	inline const struct wlr_dmabuf_attributes& dmabuf() { return m_dmabuf; }
 	inline VkImage vkImage() { return m_vkImage; }

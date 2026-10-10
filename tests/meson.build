@@ -37,6 +37,13 @@ test_compositor_diagnostics = executable(
 )
 test('compositor-diagnostics', test_compositor_diagnostics)
 
+test_mapped_image_origin = executable(
+	'test_mapped_image_origin',
+	'test_mapped_image_origin.cpp',
+	include_directories: include_directories('../src'),
+)
+test('mapped-image-origin', test_mapped_image_origin)
+
 test_staged_readback = executable(
 	'test_staged_readback',
 	[srcdir / 'staged_readback.cpp', 'test_staged_readback.cpp'],

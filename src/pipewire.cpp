@@ -224,7 +224,9 @@ static void copy_buffer(struct pipewire_state *state, struct pipewire_buffer *bu
 		chunk->stride = buffer->shm.stride;
 
 		if (!needs_reneg) {
-			uint8_t *pMappedData = tex->mappedData();
+			uint8_t *pMappedData = state->video_info.format == SPA_VIDEO_FORMAT_NV12
+				? tex->mappedPlaneData()
+				: tex->mappedData();
 
 			if (state->video_info.format == SPA_VIDEO_FORMAT_NV12) {
 				for (uint32_t i = 0; i < tex->height(); i++) {
