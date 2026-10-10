@@ -67,6 +67,7 @@ class SourceClosureTests(unittest.TestCase):
 			"gamescope:drm-commit-probe",
 			"gamescope:pipeline-compile-probe",
 			"gamescope:compositor-diagnostics",
+			"gamescope:staged-readback",
 			"gamescope:drm-format-selection",
 		]
 		names = gamescope_names + ["libdisplay-info:pocketforge-source-locator"]
@@ -90,7 +91,7 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		self.assertIn("registered_gamescope=12", positive.stdout)
+		self.assertIn("registered_gamescope=13", positive.stdout)
 		shrink_negative = subprocess.run(
 			[sys.executable, str(TEST_REGISTRATION)],
 			input=fixture.replace("gamescope:output-staging\n", ""),
