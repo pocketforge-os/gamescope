@@ -45,6 +45,37 @@ void test_combined_is_preferred()
 	CHECK( plan.rejection == Rejection::Accepted );
 }
 
+void test_linear_scanout_never_uses_combined_compute()
+{
+	const std::array kms = { KmsModifier{ kFormat, LinearModifier } };
+	const std::array vulkan = {
+		VulkanModifier{
+			kFormat,
+			LinearModifier,
+			kCompositionFeatures | FeatureTransferDst,
+			true,
+			true,
+		},
+	};
+
+	OutputPlan plan = chooseOutputPlan( { kFormat, kCompositionFeatures, kms, vulkan } );
+	CHECK( plan.mode == OutputMode::Staged );
+	CHECK( plan.modifier == LinearModifier );
+
+	const std::array noTransferDestination = {
+		VulkanModifier{
+			kFormat,
+			LinearModifier,
+			kCompositionFeatures,
+			true,
+			false,
+		},
+	};
+	plan = chooseOutputPlan( { kFormat, kCompositionFeatures, kms, noTransferDestination } );
+	CHECK( plan.mode == OutputMode::Unsupported );
+	CHECK( plan.rejection == Rejection::NoExportableLinearTransferDst );
+}
+
 void test_staged_requires_exact_linear_intersection()
 {
 	const std::array kms = { KmsModifier{ kFormat, LinearModifier } };
@@ -158,6 +189,7 @@ void test_staged_barrier_and_ownership_contract()
 int main()
 {
 	test_combined_is_preferred();
+	test_linear_scanout_never_uses_combined_compute();
 	test_staged_requires_exact_linear_intersection();
 	test_staged_rejects_missing_capabilities();
 	test_frame_actions_preserve_bypass_screenshot_and_pipewire_source();

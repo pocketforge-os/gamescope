@@ -20,6 +20,7 @@
 #include "output_rotation.hpp"
 #include "output_staging.hpp"
 #include "pipeline_compile_probe.hpp"
+#include "mapped_image_origin.hpp"
 
 #include "shaders/descriptor_set_constants.h"
 
@@ -179,9 +180,15 @@ public:
 	inline uint32_t depth() { return m_depth; }
 	inline uint32_t contentWidth() {return m_contentWidth; }
 	inline uint32_t contentHeight() {return m_contentHeight; }
-	inline uint32_t rowPitch() { return m_unRowPitch; }
+	inline VkDeviceSize rowPitch() const { return m_unRowPitch; }
+	inline VkDeviceSize mappedOffset() const { return m_unMappedOffset; }
+	inline VkDeviceSize mappedSubresourceSize() const { return m_unMappedSubresourceSize; }
+	inline VkDeviceSize mappedAllocationSize() const { return m_size; }
+	inline VkMemoryPropertyFlags mappedMemoryProperties() const { return m_mappedMemoryProperties; }
 	inline gamescope::IBackendFb* GetBackendFb() { return m_pBackendFb.get(); }
-	inline uint8_t *mappedData() { return m_pMappedData; }
+	inline uint8_t *mappedAllocationData() { return m_pMappedData; }
+	inline uint8_t *mappedData() { return gamescope::mapped_image_origin( m_pMappedData, m_unMappedOffset, false ); }
+	inline uint8_t *mappedPlaneData() { return gamescope::mapped_image_origin( m_pMappedData, m_unMappedOffset, true ); }
 	inline VkFormat format() const { return m_format; }
 	inline const struct wlr_dmabuf_attributes& dmabuf() { return m_dmabuf; }
 	inline VkImage vkImage() { return m_vkImage; }
@@ -235,8 +242,11 @@ private:
 	uint32_t m_contentWidth = 0;
 	uint32_t m_contentHeight = 0;
 
-	uint32_t m_unRowPitch = 0;
+	VkDeviceSize m_unRowPitch = 0;
 	VkDeviceSize m_size = 0;
+	VkDeviceSize m_unMappedOffset = 0;
+	VkDeviceSize m_unMappedSubresourceSize = 0;
+	VkMemoryPropertyFlags m_mappedMemoryProperties = 0;
 
 	uint32_t m_lumaOffset = 0;
 	uint32_t m_lumaPitch = 0;
@@ -410,6 +420,7 @@ namespace CompositeDebugFlag
 	static constexpr uint32_t Heatmap_MSWCG = 1u << 3;
 	static constexpr uint32_t Heatmap_Hard = 1u << 4;
 	static constexpr uint32_t Markers_Partial = 1u << 5;
+	static constexpr uint32_t ConstantRed = 1u << 6;
 	static constexpr uint32_t Tonemap_Reinhard = 1u << 7;
 };
 
@@ -557,6 +568,8 @@ struct VulkanOutput_t
 	gamescope::output_rotation::Transform outputTransform = gamescope::output_rotation::Transform::Normal;
 	gamescope::output_rotation::Transform outputTransformPartialOverlay = gamescope::output_rotation::Transform::Normal;
 	gamescope::OwningRc<CVulkanTexture> temporaryHackyBlankImage;
+	gamescope::OwningRc<CVulkanTexture> stagedReadbackOptimal;
+	gamescope::OwningRc<CVulkanTexture> stagedReadbackLinear;
 
 	uint32_t uOutputFormat = DRM_FORMAT_INVALID;
 	uint32_t uOutputFormatOverlay = DRM_FORMAT_INVALID;

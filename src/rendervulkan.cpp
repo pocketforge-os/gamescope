@@ -39,6 +39,8 @@
 #include "main.hpp"
 #include "steamcompmgr.hpp"
 #include "log.hpp"
+#include "compositor_diagnostics.hpp"
+#include "staged_readback.hpp"
 #include "Utils/Process.h"
 
 #include "cs_composite_blit.h"
@@ -127,6 +129,7 @@ VulkanOutput_t g_output;
 static std::atomic<uint64_t> s_compositionDispatches = 0;
 static std::atomic<uint64_t> s_outputRotations = 0;
 static std::atomic<uint64_t> s_stagingCopies = 0;
+static std::atomic<uint64_t> s_stagedReadbackEligibleFrames = 0;
 static std::atomic<uint64_t> s_pipelineCompileId = 0;
 
 VulkanOutputCounters vulkan_get_output_counters()
@@ -1316,6 +1319,8 @@ extern bool g_bSteamIsActiveWindow;
 VkPipeline CVulkanDevice::pipeline(ShaderType type, uint32_t layerCount, uint32_t ycbcrMask, uint32_t blur_layers, uint32_t colorspace_mask, uint32_t output_eotf, bool itm_enable)
 {
 	uint32_t effective_debug = g_uCompositeDebug;
+	if ( gamescope::compositor_diagnostics::constant_red_enabled() )
+		effective_debug = gamescope::compositor_diagnostics::with_constant_red_debug( effective_debug );
 	if ( g_bSteamIsActiveWindow )
 		effective_debug &= ~(CompositeDebugFlag::Heatmap | CompositeDebugFlag::Heatmap_MSWCG | CompositeDebugFlag::Heatmap_Hard);
 
@@ -1982,6 +1987,7 @@ void CVulkanCmdBuffer::markDirty(CVulkanTexture *image)
 void CVulkanCmdBuffer::insertBarrier(bool flush)
 {
 	std::vector<VkImageMemoryBarrier> barriers;
+	bool hasHostReadBarrier = false;
 
 	uint32_t externalQueue = m_device->supportsModifiers() ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_EXTERNAL_KHR;
 
@@ -2000,9 +2006,12 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 
 		bool isExport = flush && state.needsExport;
 		bool isPresent = flush && state.needsPresentLayout;
+		bool isHostRead = flush && image->mappedAllocationData() &&
+			( image->mappedMemoryProperties() & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT );
 
 		if (!state.discarded && !state.dirty && !state.needsImport && !isExport && !isPresent)
 			continue;
+		hasHostReadBarrier |= isHostRead;
 
 		const VkAccessFlags write_bits = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
 		const VkAccessFlags read_bits = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
@@ -2014,7 +2023,8 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 		{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.srcAccessMask = state.dirty ? write_bits : 0u,
-			.dstAccessMask = flush ? 0u : read_bits | write_bits,
+			.dstAccessMask = isHostRead ? VkAccessFlags( VK_ACCESS_HOST_READ_BIT ) :
+				flush ? 0u : read_bits | write_bits,
 			.oldLayout = state.discarded ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
 			.newLayout = isPresent ? GetBackend()->GetPresentLayout() : VK_IMAGE_LAYOUT_GENERAL,
 			.srcQueueFamilyIndex = isExport ? image->queueFamily : state.needsImport ? externalQueue : image->queueFamily,
@@ -2031,7 +2041,10 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 	}
 
 	// TODO replace VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
-	m_device->vk.CmdPipelineBarrier(m_cmdBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+	const VkPipelineStageFlags destinationStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
+		( hasHostReadBarrier ? VkPipelineStageFlags( VK_PIPELINE_STAGE_HOST_BIT ) :
+			VkPipelineStageFlags( 0 ) );
+	m_device->vk.CmdPipelineBarrier(m_cmdBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, destinationStages,
 									0, 0, nullptr, 0, nullptr, barriers.size(), barriers.data());
 }
 
@@ -2274,7 +2287,8 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 
 	if ( flags.bMappable == true )
 	{
-		properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+		properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+			VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 	}
 	else
 	{
@@ -2482,11 +2496,26 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 	
 	VkMemoryRequirements memRequirements;
 	g_device.vk.GetImageMemoryRequirements(g_device.device(), m_vkImage, &memRequirements);
+	int32_t memoryTypeIndex = g_device.findMemoryType( properties, memRequirements.memoryTypeBits );
+	if ( memoryTypeIndex < 0 && flags.bMappable )
+	{
+		// HOST_CACHED is an optimization, not a correctness requirement. The
+		// readback path does require coherent host visibility so it never needs
+		// an unaligned vkInvalidateMappedMemoryRanges call.
+		properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		memoryTypeIndex = g_device.findMemoryType( properties, memRequirements.memoryTypeBits );
+	}
+	if ( memoryTypeIndex < 0 )
+	{
+		vk_log.errorf( "findMemoryType failed required=0x%x type_bits=0x%x mappable=%u",
+			properties, memRequirements.memoryTypeBits, unsigned( flags.bMappable ) );
+		return false;
+	}
 
 	VkMemoryAllocateInfo allocInfo = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		.allocationSize = memRequirements.size,
-		.memoryTypeIndex = uint32_t(g_device.findMemoryType(properties, memRequirements.memoryTypeBits)),
+		.memoryTypeIndex = uint32_t( memoryTypeIndex ),
 	};
 
 	m_size = allocInfo.allocationSize;
@@ -2592,6 +2621,11 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 		g_device.vk.GetImageSubresourceLayout(g_device.device(), m_vkImage, &image_subresource, &image_layout);
 
 		m_unRowPitch = image_layout.rowPitch;
+		m_unMappedOffset = image_layout.offset;
+		m_unMappedSubresourceSize = image_layout.size;
+		m_mappedMemoryProperties = properties;
+		if ( pExistingImageToReuseMemory )
+			m_mappedMemoryProperties = pExistingImageToReuseMemory->mappedMemoryProperties();
 
 		if (isYcbcr())
 		{
@@ -3538,6 +3572,18 @@ static const char *outputPlanRejectionName( gamescope::output_staging::Rejection
 	return "unknown";
 }
 
+static const char *outputPlanModeName( gamescope::output_staging::OutputMode mode )
+{
+	using gamescope::output_staging::OutputMode;
+	switch ( mode )
+	{
+		case OutputMode::Unsupported: return "unsupported";
+		case OutputMode::Combined: return "combined";
+		case OutputMode::Staged: return "staged";
+	}
+	return "unknown";
+}
+
 static bool allocateOutputRingForPlan(
 	uint32_t drmFormat,
 	const gamescope::output_staging::OutputPlan &plan,
@@ -3651,7 +3697,11 @@ static bool allocateOutputRing(
 	}
 
 	if ( allocateOutputRingForPlan( drmFormat, plan, transform, pReuse, pCandidate ) )
+	{
+		vk_log.infof( "output plan accepted format=0x%x mode=%s modifier=0x%" PRIx64,
+			drmFormat, outputPlanModeName( plan.mode ), plan.modifier );
 		return true;
+	}
 
 	if ( plan.mode == OutputMode::Combined )
 	{
@@ -3659,7 +3709,11 @@ static bool allocateOutputRing(
 		plan = makeOutputPlan( drmFormat, kmsModifiers, false );
 		if ( plan.mode == OutputMode::Staged &&
 			allocateOutputRingForPlan( drmFormat, plan, transform, nullptr, pCandidate ) )
+		{
+			vk_log.infof( "output plan accepted format=0x%x mode=%s modifier=0x%" PRIx64,
+				drmFormat, outputPlanModeName( plan.mode ), plan.modifier );
 			return true;
+		}
 	}
 
 	vk_log.errorf( "failed to allocate complete output ring for format 0x%x: %s", drmFormat, outputPlanRejectionName( plan.rejection ) );
@@ -4324,6 +4378,95 @@ void bind_all_layers(CVulkanCmdBuffer* cmdBuffer, const struct FrameInfo_t *fram
 	}
 }
 
+static bool ensureStagedReadbackTexture(
+	gamescope::OwningRc<CVulkanTexture> &readback,
+	const gamescope::Rc<CVulkanTexture> &source )
+{
+	if ( readback &&
+		readback->width() == source->width() &&
+		readback->height() == source->height() &&
+		readback->drmFormat() == source->drmFormat() )
+		return true;
+
+	readback = nullptr;
+	CVulkanTexture::createFlags flags;
+	flags.bMappable = true;
+	flags.bTransferDst = true;
+	gamescope::OwningRc<CVulkanTexture> candidate = new CVulkanTexture();
+	if ( !candidate->BInit( source->width(), source->height(), 1u,
+		source->drmFormat(), flags ) )
+	{
+		vk_log.errorf( "staged readback allocation failed format=0x%x size=%ux%u",
+			source->drmFormat(), source->width(), source->height() );
+		return false;
+	}
+
+	readback = std::move( candidate );
+	return true;
+}
+
+static std::optional<gamescope::staged_readback::PixelOrder>
+stagedReadbackPixelOrder( VkFormat format )
+{
+	using gamescope::staged_readback::PixelOrder;
+	if ( format == VK_FORMAT_R8G8B8A8_UNORM )
+		return PixelOrder::RGBA;
+	if ( format == VK_FORMAT_B8G8R8A8_UNORM )
+		return PixelOrder::BGRA;
+	return std::nullopt;
+}
+
+static bool logStagedReadback( uint64_t frame, uint32_t ring,
+	const char *imageName, const gamescope::Rc<CVulkanTexture> &texture )
+{
+	const std::optional order = stagedReadbackPixelOrder( texture->format() );
+	if ( !order )
+	{
+		vk_log.infof( "STAGED_READBACK state=unsupported frame=%" PRIu64
+			" ring=%u image=%s format=0x%x",
+			frame, ring, imageName, texture->drmFormat() );
+		return false;
+	}
+
+	const gamescope::staged_readback::MappedLayout layout = {
+		.allocationSize = size_t( texture->mappedAllocationSize() ),
+		.offset = size_t( texture->mappedOffset() ),
+		.rowPitch = size_t( texture->rowPitch() ),
+		.width = texture->width(),
+		.height = texture->height(),
+	};
+	const std::optional summary = gamescope::staged_readback::summarizeMapped(
+		texture->mappedAllocationData(), layout, *order );
+	const VkMemoryPropertyFlags memoryProperties = texture->mappedMemoryProperties();
+	if ( !summary || !( memoryProperties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ) ||
+		!( memoryProperties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ) )
+	{
+		vk_log.infof( "STAGED_READBACK state=invalid frame=%" PRIu64
+			" ring=%u image=%s format=0x%x size=%ux%u pitch=%" PRIu64
+			" offset=%" PRIu64 " subresource_size=%" PRIu64
+			" allocation_size=%" PRIu64 " memory_properties=0x%x",
+			frame, ring, imageName, texture->drmFormat(), texture->width(),
+			texture->height(), uint64_t( texture->rowPitch() ),
+			uint64_t( texture->mappedOffset() ),
+			uint64_t( texture->mappedSubresourceSize() ),
+			uint64_t( texture->mappedAllocationSize() ), memoryProperties );
+		return false;
+	}
+	vk_log.infof( "STAGED_READBACK state=complete frame=%" PRIu64
+		" ring=%u image=%s format=0x%x size=%ux%u pitch=%" PRIu64
+		" offset=%" PRIu64 " subresource_size=%" PRIu64
+		" allocation_size=%" PRIu64 " memory_properties=0x%x"
+		" pixels=%" PRIu64 " red=%" PRIu64 " black=%" PRIu64
+		" hash_fnv1a64=%016" PRIx64,
+		frame, ring, imageName, texture->drmFormat(), texture->width(),
+		texture->height(), uint64_t( texture->rowPitch() ),
+		uint64_t( texture->mappedOffset() ),
+		uint64_t( texture->mappedSubresourceSize() ),
+		uint64_t( texture->mappedAllocationSize() ), memoryProperties,
+		summary->pixels, summary->red, summary->black, summary->hash );
+	return true;
+}
+
 std::optional<uint64_t> vulkan_screenshot( const struct FrameInfo_t *frameInfo, gamescope::Rc<CVulkanTexture> pScreenshotTexture, gamescope::Rc<CVulkanTexture> pYUVOutTexture )
 {
 	EOTF outputTF = frameInfo->outputEncodingEOTF;
@@ -4564,6 +4707,13 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	}
 	else
 	{
+		static std::atomic<bool> s_constantRedLogged = false;
+		if ( gamescope::compositor_diagnostics::constant_red_enabled() &&
+			!s_constantRedLogged.exchange( true, std::memory_order_relaxed ) )
+		{
+			vk_log.infof( "CONSTANT_COMPOSITE state=enabled color=red shader=BLIT"
+				" sampling=bypassed target=optimal-storage" );
+		}
 		cmdBuffer->bindPipeline( g_device.pipeline(SHADER_TYPE_BLIT, frameInfo->layerCount, frameInfo->ycbcrMask(), 0u, frameInfo->colorspaceMask(), outputTF ));
 		bind_all_layers(cmdBuffer.get(), frameInfo);
 		cmdBuffer->bindTarget(compositeImage);
@@ -4654,16 +4804,82 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	}
 
 	bool stagedCopy = false;
+	bool stagedReadback = false;
+	const std::optional<uint64_t> stagedReadbackFrame =
+		gamescope::staged_readback::next_eligible_frame(
+			s_stagedReadbackEligibleFrames,
+			outputComposition &&
+			outputMode == gamescope::output_staging::OutputMode::Staged &&
+			!partial && gamescope::staged_readback::enabled() );
+	const uint32_t stagedReadbackRing = g_output.nOutImage;
+	gamescope::Rc<CVulkanTexture> stagedReadbackOptimal;
+	gamescope::Rc<CVulkanTexture> stagedReadbackLinear;
 	if ( outputComposition && outputMode == gamescope::output_staging::OutputMode::Staged )
 	{
 		gamescope::Rc<CVulkanTexture> scanoutImage = partial
 			? g_output.outputImagesPartialOverlay[ g_output.nOutImage ]
 			: g_output.outputImages[ g_output.nOutImage ];
+		if ( stagedReadbackFrame &&
+			gamescope::staged_readback::should_sample( *stagedReadbackFrame ) )
+		{
+			const bool optimalReady = ensureStagedReadbackTexture(
+				g_output.stagedReadbackOptimal, stagingSource );
+			const bool linearReady = ensureStagedReadbackTexture(
+				g_output.stagedReadbackLinear, scanoutImage );
+			if ( optimalReady && linearReady )
+			{
+				stagedReadbackOptimal = g_output.stagedReadbackOptimal.get();
+				stagedReadbackLinear = g_output.stagedReadbackLinear.get();
+				const bool optimalExtentMatches =
+					stagingSource->width() == stagedReadbackOptimal->width() &&
+					stagingSource->height() == stagedReadbackOptimal->height();
+				const bool linearExtentMatches =
+					scanoutImage->width() == stagedReadbackLinear->width() &&
+					scanoutImage->height() == stagedReadbackLinear->height();
+				if ( optimalExtentMatches && linearExtentMatches )
+				{
+					cmdBuffer->copyImage( stagingSource, stagedReadbackOptimal );
+					stagedReadback = true;
+				}
+				else
+				{
+					vk_log.errorf( "STAGED_READBACK_PAIR state=invalid frame=%" PRIu64
+						" ring=%u reason=extent-mismatch optimal=%ux%u/%ux%u"
+						" linear=%ux%u/%ux%u",
+						*stagedReadbackFrame, stagedReadbackRing,
+						stagingSource->width(), stagingSource->height(),
+						stagedReadbackOptimal->width(), stagedReadbackOptimal->height(),
+						scanoutImage->width(), scanoutImage->height(),
+						stagedReadbackLinear->width(), stagedReadbackLinear->height() );
+				}
+			}
+			else
+			{
+				vk_log.errorf( "STAGED_READBACK_PAIR state=invalid frame=%" PRIu64
+					" ring=%u reason=allocation optimal_ready=%d linear_ready=%d",
+					*stagedReadbackFrame, stagedReadbackRing,
+					optimalReady, linearReady );
+			}
+		}
 		cmdBuffer->copyImage( stagingSource, scanoutImage );
+		if ( stagedReadback )
+			cmdBuffer->copyImage( scanoutImage, stagedReadbackLinear );
 		stagedCopy = true;
 	}
 
 	uint64_t sequence = g_device.submit(std::move(cmdBuffer));
+	if ( stagedReadback )
+	{
+		g_device.wait( sequence, false );
+		const bool optimalComplete = logStagedReadback( *stagedReadbackFrame, stagedReadbackRing,
+			"optimal-storage", stagedReadbackOptimal );
+		const bool linearComplete = logStagedReadback( *stagedReadbackFrame, stagedReadbackRing,
+			"linear-export", stagedReadbackLinear );
+		vk_log.infof( "STAGED_READBACK_PAIR state=%s frame=%" PRIu64
+			" ring=%u source=optimal-storage target=linear-export",
+			optimalComplete && linearComplete ? "complete" : "invalid",
+			*stagedReadbackFrame, stagedReadbackRing );
+	}
 	if ( outputComposition )
 	{
 		s_compositionDispatches.fetch_add( 1, std::memory_order_relaxed );
