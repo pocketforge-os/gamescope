@@ -8379,12 +8379,22 @@ void LaunchNestedChildren( char **ppPrimaryChildArgv )
 	if ( g_bLaunchMangoapp )
 	{
 		char *ppMangoappArgv[] = { (char *)"mangoapp", NULL };
-		gamescope::Process::SpawnProcessInWatchdog(
-			ppMangoappArgv, true, nullptr,
-			[]( pid_t nMangoappReaperPid )
-			{
-				wlserver_set_mangoapp_reaper_pid( nMangoappReaperPid );
-			} );
+		int nWaylandBrokerFd = wlserver_take_trusted_wayland_broker_fd();
+		if ( nWaylandBrokerFd < 0 )
+		{
+			s_LaunchLogScope.errorf( "Refusing to launch mangoapp without a trusted Wayland broker." );
+			ShutdownGamescope();
+			return;
+		}
+
+		pid_t nMangoappReaperPid = gamescope::Process::SpawnProcessInWatchdog(
+			ppMangoappArgv, true, nullptr, nullptr, nWaylandBrokerFd );
+		gamescope::Process::CloseFd( nWaylandBrokerFd );
+		if ( nMangoappReaperPid < 0 )
+		{
+			s_LaunchLogScope.errorf( "Failed to launch mangoapp with trusted Wayland provenance." );
+			ShutdownGamescope();
+		}
 	}
 }
 

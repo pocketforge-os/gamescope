@@ -112,7 +112,8 @@ src = [
   'main.cpp',
   'edid.cpp',
   'wlserver.cpp',
-  'system_overlay_auth.cpp',
+  'wayland_security.cpp',
+  'xwayland_security.cpp',
   'vblankmanager.cpp',
   'rendervulkan.cpp',
   'drm_device_selection.cpp',
@@ -222,7 +223,7 @@ if pipewire_dep.found()
   executable( 'gamescopestream', ['Apps/gamescopestream.cpp'], gamescope_core_src, gamescope_version, protocols_client_src, dependencies: [ pipewire_dep, dep_wayland, libdecor_dep, cap_dep ], install: true )
 endif
 
-executable('gamescopereaper', ['Apps/gamescopereaper.cpp', gamescope_core_src], gamescope_version, dependencies: [cap_dep], install:true )
+executable('gamescopereaper', ['Apps/gamescopereaper.cpp', 'wayland_security.cpp', gamescope_core_src], gamescope_version, dependencies: [cap_dep, wayland_server], install:true )
 
 benchmark_dep = dependency('benchmark', required: get_option('benchmark'), disabler: true)
 executable('gamescope_color_microbench', ['color_bench.cpp', 'color_helpers.cpp'], gamescope_core_src, gamescope_version, dependencies:[benchmark_dep, glm_dep, cap_dep])
