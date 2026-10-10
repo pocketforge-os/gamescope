@@ -2039,7 +2039,8 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 
 	// TODO replace VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
 	const VkPipelineStageFlags destinationStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
-		( hasHostReadBarrier ? VK_PIPELINE_STAGE_HOST_BIT : VkPipelineStageFlags( 0 ) );
+		( hasHostReadBarrier ? VkPipelineStageFlags( VK_PIPELINE_STAGE_HOST_BIT ) :
+			VkPipelineStageFlags( 0 ) );
 	m_device->vk.CmdPipelineBarrier(m_cmdBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, destinationStages,
 									0, 0, nullptr, 0, nullptr, barriers.size(), barriers.data());
 }
