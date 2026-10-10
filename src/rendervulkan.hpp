@@ -179,9 +179,14 @@ public:
 	inline uint32_t depth() { return m_depth; }
 	inline uint32_t contentWidth() {return m_contentWidth; }
 	inline uint32_t contentHeight() {return m_contentHeight; }
-	inline uint32_t rowPitch() { return m_unRowPitch; }
+	inline VkDeviceSize rowPitch() const { return m_unRowPitch; }
+	inline VkDeviceSize mappedOffset() const { return m_unMappedOffset; }
+	inline VkDeviceSize mappedSubresourceSize() const { return m_unMappedSubresourceSize; }
+	inline VkDeviceSize mappedAllocationSize() const { return m_size; }
+	inline VkMemoryPropertyFlags mappedMemoryProperties() const { return m_mappedMemoryProperties; }
 	inline gamescope::IBackendFb* GetBackendFb() { return m_pBackendFb.get(); }
-	inline uint8_t *mappedData() { return m_pMappedData; }
+	inline uint8_t *mappedAllocationData() { return m_pMappedData; }
+	inline uint8_t *mappedData() { return m_pMappedData ? m_pMappedData + m_unMappedOffset : nullptr; }
 	inline VkFormat format() const { return m_format; }
 	inline const struct wlr_dmabuf_attributes& dmabuf() { return m_dmabuf; }
 	inline VkImage vkImage() { return m_vkImage; }
@@ -235,8 +240,11 @@ private:
 	uint32_t m_contentWidth = 0;
 	uint32_t m_contentHeight = 0;
 
-	uint32_t m_unRowPitch = 0;
+	VkDeviceSize m_unRowPitch = 0;
 	VkDeviceSize m_size = 0;
+	VkDeviceSize m_unMappedOffset = 0;
+	VkDeviceSize m_unMappedSubresourceSize = 0;
+	VkMemoryPropertyFlags m_mappedMemoryProperties = 0;
 
 	uint32_t m_lumaOffset = 0;
 	uint32_t m_lumaPitch = 0;

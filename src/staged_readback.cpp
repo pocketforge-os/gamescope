@@ -1,6 +1,7 @@
 #include "staged_readback.hpp"
 
 #include <cstdlib>
+#include <limits>
 
 namespace gamescope::staged_readback
 {
@@ -34,6 +35,30 @@ Summary summarize( const uint8_t *data, size_t rowPitch, uint32_t width,
 	}
 
 	return result;
+}
+
+std::optional<Summary> summarizeMapped( const uint8_t *allocation,
+	const MappedLayout &layout, PixelOrder order )
+{
+	if ( !allocation || layout.width == 0 || layout.height == 0 )
+		return std::nullopt;
+
+	constexpr size_t bytesPerPixel = 4;
+	if ( layout.width > std::numeric_limits<size_t>::max() / bytesPerPixel )
+		return std::nullopt;
+	const size_t rowBytes = size_t( layout.width ) * bytesPerPixel;
+	if ( layout.rowPitch < rowBytes || layout.offset > layout.allocationSize )
+		return std::nullopt;
+
+	const size_t remaining = layout.allocationSize - layout.offset;
+	if ( rowBytes > remaining )
+		return std::nullopt;
+	const size_t precedingRows = size_t( layout.height - 1 );
+	if ( precedingRows > ( remaining - rowBytes ) / layout.rowPitch )
+		return std::nullopt;
+
+	return summarize( allocation + layout.offset, layout.rowPitch,
+		layout.width, layout.height, order );
 }
 
 bool enabled()

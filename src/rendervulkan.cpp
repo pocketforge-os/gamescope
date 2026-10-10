@@ -2001,6 +2001,8 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 
 		bool isExport = flush && state.needsExport;
 		bool isPresent = flush && state.needsPresentLayout;
+		bool isHostRead = flush && image->mappedAllocationData() &&
+			( image->mappedMemoryProperties() & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT );
 
 		if (!state.discarded && !state.dirty && !state.needsImport && !isExport && !isPresent)
 			continue;
@@ -2015,7 +2017,8 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 		{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.srcAccessMask = state.dirty ? write_bits : 0u,
-			.dstAccessMask = flush ? 0u : read_bits | write_bits,
+			.dstAccessMask = isHostRead ? VK_ACCESS_HOST_READ_BIT :
+				flush ? 0u : read_bits | write_bits,
 			.oldLayout = state.discarded ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
 			.newLayout = isPresent ? GetBackend()->GetPresentLayout() : VK_IMAGE_LAYOUT_GENERAL,
 			.srcQueueFamilyIndex = isExport ? image->queueFamily : state.needsImport ? externalQueue : image->queueFamily,
@@ -2275,7 +2278,8 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 
 	if ( flags.bMappable == true )
 	{
-		properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+		properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+			VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 	}
 	else
 	{
@@ -2483,11 +2487,26 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 	
 	VkMemoryRequirements memRequirements;
 	g_device.vk.GetImageMemoryRequirements(g_device.device(), m_vkImage, &memRequirements);
+	int32_t memoryTypeIndex = g_device.findMemoryType( properties, memRequirements.memoryTypeBits );
+	if ( memoryTypeIndex < 0 && flags.bMappable )
+	{
+		// HOST_CACHED is an optimization, not a correctness requirement. The
+		// readback path does require coherent host visibility so it never needs
+		// an unaligned vkInvalidateMappedMemoryRanges call.
+		properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		memoryTypeIndex = g_device.findMemoryType( properties, memRequirements.memoryTypeBits );
+	}
+	if ( memoryTypeIndex < 0 )
+	{
+		vk_log.errorf( "findMemoryType failed required=0x%x type_bits=0x%x mappable=%u",
+			properties, memRequirements.memoryTypeBits, unsigned( flags.bMappable ) );
+		return false;
+	}
 
 	VkMemoryAllocateInfo allocInfo = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		.allocationSize = memRequirements.size,
-		.memoryTypeIndex = uint32_t(g_device.findMemoryType(properties, memRequirements.memoryTypeBits)),
+		.memoryTypeIndex = uint32_t( memoryTypeIndex ),
 	};
 
 	m_size = allocInfo.allocationSize;
@@ -2593,6 +2612,11 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 		g_device.vk.GetImageSubresourceLayout(g_device.device(), m_vkImage, &image_subresource, &image_layout);
 
 		m_unRowPitch = image_layout.rowPitch;
+		m_unMappedOffset = image_layout.offset;
+		m_unMappedSubresourceSize = image_layout.size;
+		m_mappedMemoryProperties = properties;
+		if ( pExistingImageToReuseMemory )
+			m_mappedMemoryProperties = pExistingImageToReuseMemory->mappedMemoryProperties();
 
 		if (isYcbcr())
 		{
@@ -4383,7 +4407,7 @@ stagedReadbackPixelOrder( VkFormat format )
 	return std::nullopt;
 }
 
-static void logStagedReadback( uint64_t frame, uint32_t ring,
+static bool logStagedReadback( uint64_t frame, uint32_t ring,
 	const char *imageName, const gamescope::Rc<CVulkanTexture> &texture )
 {
 	const std::optional order = stagedReadbackPixelOrder( texture->format() );
@@ -4392,19 +4416,46 @@ static void logStagedReadback( uint64_t frame, uint32_t ring,
 		vk_log.infof( "STAGED_READBACK state=unsupported frame=%" PRIu64
 			" ring=%u image=%s format=0x%x",
 			frame, ring, imageName, texture->drmFormat() );
-		return;
+		return false;
 	}
 
-	const gamescope::staged_readback::Summary summary =
-		gamescope::staged_readback::summarize( texture->mappedData(),
-			texture->rowPitch(), texture->width(), texture->height(), *order );
+	const gamescope::staged_readback::MappedLayout layout = {
+		.allocationSize = size_t( texture->mappedAllocationSize() ),
+		.offset = size_t( texture->mappedOffset() ),
+		.rowPitch = size_t( texture->rowPitch() ),
+		.width = texture->width(),
+		.height = texture->height(),
+	};
+	const std::optional summary = gamescope::staged_readback::summarizeMapped(
+		texture->mappedAllocationData(), layout, *order );
+	const VkMemoryPropertyFlags memoryProperties = texture->mappedMemoryProperties();
+	if ( !summary || !( memoryProperties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ) ||
+		!( memoryProperties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ) )
+	{
+		vk_log.infof( "STAGED_READBACK state=invalid frame=%" PRIu64
+			" ring=%u image=%s format=0x%x size=%ux%u pitch=%" PRIu64
+			" offset=%" PRIu64 " subresource_size=%" PRIu64
+			" allocation_size=%" PRIu64 " memory_properties=0x%x",
+			frame, ring, imageName, texture->drmFormat(), texture->width(),
+			texture->height(), uint64_t( texture->rowPitch() ),
+			uint64_t( texture->mappedOffset() ),
+			uint64_t( texture->mappedSubresourceSize() ),
+			uint64_t( texture->mappedAllocationSize() ), memoryProperties );
+		return false;
+	}
 	vk_log.infof( "STAGED_READBACK state=complete frame=%" PRIu64
-		" ring=%u image=%s format=0x%x size=%ux%u pitch=%u"
+		" ring=%u image=%s format=0x%x size=%ux%u pitch=%" PRIu64
+		" offset=%" PRIu64 " subresource_size=%" PRIu64
+		" allocation_size=%" PRIu64 " memory_properties=0x%x"
 		" pixels=%" PRIu64 " red=%" PRIu64 " black=%" PRIu64
 		" hash_fnv1a64=%016" PRIx64,
 		frame, ring, imageName, texture->drmFormat(), texture->width(),
-		texture->height(), texture->rowPitch(), summary.pixels, summary.red,
-		summary.black, summary.hash );
+		texture->height(), uint64_t( texture->rowPitch() ),
+		uint64_t( texture->mappedOffset() ),
+		uint64_t( texture->mappedSubresourceSize() ),
+		uint64_t( texture->mappedAllocationSize() ), memoryProperties,
+		summary->pixels, summary->red, summary->black, summary->hash );
+	return true;
 }
 
 std::optional<uint64_t> vulkan_screenshot( const struct FrameInfo_t *frameInfo, gamescope::Rc<CVulkanTexture> pScreenshotTexture, gamescope::Rc<CVulkanTexture> pYUVOutTexture )
@@ -4755,8 +4806,25 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 		{
 			stagedReadbackOptimal = g_output.stagedReadbackOptimal.get();
 			stagedReadbackLinear = g_output.stagedReadbackLinear.get();
-			cmdBuffer->copyImage( stagingSource, stagedReadbackOptimal );
-			stagedReadback = true;
+			const bool optimalExtentMatches =
+				stagingSource->width() == stagedReadbackOptimal->width() &&
+				stagingSource->height() == stagedReadbackOptimal->height();
+			const bool linearExtentMatches =
+				scanoutImage->width() == stagedReadbackLinear->width() &&
+				scanoutImage->height() == stagedReadbackLinear->height();
+			if ( optimalExtentMatches && linearExtentMatches )
+			{
+				cmdBuffer->copyImage( stagingSource, stagedReadbackOptimal );
+				stagedReadback = true;
+			}
+			else
+			{
+				vk_log.errorf( "staged readback extent mismatch optimal=%ux%u/%ux%u linear=%ux%u/%ux%u",
+					stagingSource->width(), stagingSource->height(),
+					stagedReadbackOptimal->width(), stagedReadbackOptimal->height(),
+					scanoutImage->width(), scanoutImage->height(),
+					stagedReadbackLinear->width(), stagedReadbackLinear->height() );
+			}
 		}
 		cmdBuffer->copyImage( stagingSource, scanoutImage );
 		if ( stagedReadback )
@@ -4768,12 +4836,13 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	if ( stagedReadback )
 	{
 		g_device.wait( sequence, false );
-		logStagedReadback( stagedReadbackFrame, stagedReadbackRing,
+		const bool optimalComplete = logStagedReadback( stagedReadbackFrame, stagedReadbackRing,
 			"optimal-storage", stagedReadbackOptimal );
-		logStagedReadback( stagedReadbackFrame, stagedReadbackRing,
+		const bool linearComplete = logStagedReadback( stagedReadbackFrame, stagedReadbackRing,
 			"linear-export", stagedReadbackLinear );
-		vk_log.infof( "STAGED_READBACK_PAIR state=complete frame=%" PRIu64
+		vk_log.infof( "STAGED_READBACK_PAIR state=%s frame=%" PRIu64
 			" ring=%u source=optimal-storage target=linear-export",
+			optimalComplete && linearComplete ? "complete" : "invalid",
 			stagedReadbackFrame, stagedReadbackRing );
 	}
 	if ( outputComposition )
