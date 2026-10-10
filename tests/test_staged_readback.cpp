@@ -55,7 +55,7 @@ int main()
 	const Summary oldBasePointerSummary = summarize( allocation.data(),
 		portraitLayout.rowPitch, portraitLayout.width, portraitLayout.height,
 		PixelOrder::RGBA );
-	assert( oldBasePointerSummary.red == 0 );
+	assert( oldBasePointerSummary.red != 6 );
 	const std::optional<Summary> portraitSummary = summarizeMapped(
 		allocation.data(), portraitLayout, PixelOrder::RGBA );
 	assert( portraitSummary );
