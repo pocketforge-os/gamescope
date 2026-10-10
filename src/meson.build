@@ -117,6 +117,7 @@ src = [
   'rendervulkan.cpp',
   'drm_device_selection.cpp',
   'output_staging.cpp',
+  'staged_readback.cpp',
   'output_rotation.cpp',
   'log.cpp',
   'ime.cpp',

@@ -39,6 +39,7 @@
 #include "main.hpp"
 #include "steamcompmgr.hpp"
 #include "log.hpp"
+#include "staged_readback.hpp"
 #include "Utils/Process.h"
 
 #include "cs_composite_blit.h"
@@ -4344,6 +4345,68 @@ void bind_all_layers(CVulkanCmdBuffer* cmdBuffer, const struct FrameInfo_t *fram
 	}
 }
 
+static bool ensureStagedReadbackTexture(
+	gamescope::OwningRc<CVulkanTexture> &readback,
+	const gamescope::Rc<CVulkanTexture> &source )
+{
+	if ( readback &&
+		readback->width() == source->width() &&
+		readback->height() == source->height() &&
+		readback->drmFormat() == source->drmFormat() )
+		return true;
+
+	readback = nullptr;
+	CVulkanTexture::createFlags flags;
+	flags.bMappable = true;
+	flags.bTransferDst = true;
+	gamescope::OwningRc<CVulkanTexture> candidate = new CVulkanTexture();
+	if ( !candidate->BInit( source->width(), source->height(), 1u,
+		source->drmFormat(), flags ) )
+	{
+		vk_log.errorf( "staged readback allocation failed format=0x%x size=%ux%u",
+			source->drmFormat(), source->width(), source->height() );
+		return false;
+	}
+
+	readback = std::move( candidate );
+	return true;
+}
+
+static std::optional<gamescope::staged_readback::PixelOrder>
+stagedReadbackPixelOrder( VkFormat format )
+{
+	using gamescope::staged_readback::PixelOrder;
+	if ( format == VK_FORMAT_R8G8B8A8_UNORM )
+		return PixelOrder::RGBA;
+	if ( format == VK_FORMAT_B8G8R8A8_UNORM )
+		return PixelOrder::BGRA;
+	return std::nullopt;
+}
+
+static void logStagedReadback( uint64_t frame, uint32_t ring,
+	const char *imageName, const gamescope::Rc<CVulkanTexture> &texture )
+{
+	const std::optional order = stagedReadbackPixelOrder( texture->format() );
+	if ( !order )
+	{
+		vk_log.infof( "STAGED_READBACK state=unsupported frame=%" PRIu64
+			" ring=%u image=%s format=0x%x",
+			frame, ring, imageName, texture->drmFormat() );
+		return;
+	}
+
+	const gamescope::staged_readback::Summary summary =
+		gamescope::staged_readback::summarize( texture->mappedData(),
+			texture->rowPitch(), texture->width(), texture->height(), *order );
+	vk_log.infof( "STAGED_READBACK state=complete frame=%" PRIu64
+		" ring=%u image=%s format=0x%x size=%ux%u pitch=%u"
+		" pixels=%" PRIu64 " red=%" PRIu64 " black=%" PRIu64
+		" hash_fnv1a64=%016" PRIx64,
+		frame, ring, imageName, texture->drmFormat(), texture->width(),
+		texture->height(), texture->rowPitch(), summary.pixels, summary.red,
+		summary.black, summary.hash );
+}
+
 std::optional<uint64_t> vulkan_screenshot( const struct FrameInfo_t *frameInfo, gamescope::Rc<CVulkanTexture> pScreenshotTexture, gamescope::Rc<CVulkanTexture> pYUVOutTexture )
 {
 	EOTF outputTF = frameInfo->outputEncodingEOTF;
@@ -4674,16 +4737,45 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	}
 
 	bool stagedCopy = false;
+	bool stagedReadback = false;
+	const uint64_t stagedReadbackFrame =
+		s_compositionDispatches.load( std::memory_order_relaxed ) + 1;
+	const uint32_t stagedReadbackRing = g_output.nOutImage;
+	gamescope::Rc<CVulkanTexture> stagedReadbackOptimal;
+	gamescope::Rc<CVulkanTexture> stagedReadbackLinear;
 	if ( outputComposition && outputMode == gamescope::output_staging::OutputMode::Staged )
 	{
 		gamescope::Rc<CVulkanTexture> scanoutImage = partial
 			? g_output.outputImagesPartialOverlay[ g_output.nOutImage ]
 			: g_output.outputImages[ g_output.nOutImage ];
+		if ( !partial && gamescope::staged_readback::enabled() &&
+			gamescope::staged_readback::should_sample( stagedReadbackFrame ) &&
+			ensureStagedReadbackTexture( g_output.stagedReadbackOptimal, stagingSource ) &&
+			ensureStagedReadbackTexture( g_output.stagedReadbackLinear, scanoutImage ) )
+		{
+			stagedReadbackOptimal = g_output.stagedReadbackOptimal.get();
+			stagedReadbackLinear = g_output.stagedReadbackLinear.get();
+			cmdBuffer->copyImage( stagingSource, stagedReadbackOptimal );
+			stagedReadback = true;
+		}
 		cmdBuffer->copyImage( stagingSource, scanoutImage );
+		if ( stagedReadback )
+			cmdBuffer->copyImage( scanoutImage, stagedReadbackLinear );
 		stagedCopy = true;
 	}
 
 	uint64_t sequence = g_device.submit(std::move(cmdBuffer));
+	if ( stagedReadback )
+	{
+		g_device.wait( sequence, false );
+		logStagedReadback( stagedReadbackFrame, stagedReadbackRing,
+			"optimal-storage", stagedReadbackOptimal );
+		logStagedReadback( stagedReadbackFrame, stagedReadbackRing,
+			"linear-export", stagedReadbackLinear );
+		vk_log.infof( "STAGED_READBACK_PAIR state=complete frame=%" PRIu64
+			" ring=%u source=optimal-storage target=linear-export",
+			stagedReadbackFrame, stagedReadbackRing );
+	}
 	if ( outputComposition )
 	{
 		s_compositionDispatches.fetch_add( 1, std::memory_order_relaxed );

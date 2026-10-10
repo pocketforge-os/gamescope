@@ -557,6 +557,8 @@ struct VulkanOutput_t
 	gamescope::output_rotation::Transform outputTransform = gamescope::output_rotation::Transform::Normal;
 	gamescope::output_rotation::Transform outputTransformPartialOverlay = gamescope::output_rotation::Transform::Normal;
 	gamescope::OwningRc<CVulkanTexture> temporaryHackyBlankImage;
+	gamescope::OwningRc<CVulkanTexture> stagedReadbackOptimal;
+	gamescope::OwningRc<CVulkanTexture> stagedReadbackLinear;
 
 	uint32_t uOutputFormat = DRM_FORMAT_INVALID;
 	uint32_t uOutputFormatOverlay = DRM_FORMAT_INVALID;

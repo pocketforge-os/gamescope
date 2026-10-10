@@ -142,6 +142,19 @@ increment `composition_dispatches`. Direct scanout increments neither counter.
 A composited staged frame therefore advances both counters by one; a composited
 combined frame advances only `composition_dispatches`.
 
+For device-side fault localization, setting
+`GAMESCOPE_STAGED_READBACK_DIAGNOSTICS=1` adds transfer-only, host-mappable
+diagnostic images. On frame 1 and every 60th frame through frame 600, the same
+command buffer copies the optimal staging source before the production copy,
+then copies the linear export image after the production copy. Gamescope waits
+for that diagnostic submission and logs pixel count, exact-red count,
+exact-black count, and FNV-1a hash for both images with one frame/ring identity.
+The diagnostic images are neither exportable nor storage targets. Allocation
+failure disables that sample without changing the production staging copy.
+The environment variable is off by default and is intended only for bounded
+debug runs because each sampled frame adds a synchronous wait and two full-frame
+copies.
+
 ## Errors and fallback policy
 
 Capability probing is deterministic and side-effect free. Allocation attempts
@@ -169,6 +182,8 @@ Deterministic unit tests exercise a Vulkan-independent planner and state model:
 - barrier/ownership order and first-use discard versus reuse acquisition;
 - counter behavior for direct, combined, staged, and failed frames;
 - explicit-output, screenshot, and PipeWire source selection.
+- readback pixel ordering, row-pitch handling, hashing, sampling bounds, and
+  opt-in environment parsing.
 
 An optional software-Vulkan integration test may validate same-format
 optimal-to-linear transfer and pixels under lavapipe when the runner exposes the

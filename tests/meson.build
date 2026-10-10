@@ -37,6 +37,13 @@ test_compositor_diagnostics = executable(
 )
 test('compositor-diagnostics', test_compositor_diagnostics)
 
+test_staged_readback = executable(
+	'test_staged_readback',
+	[srcdir / 'staged_readback.cpp', 'test_staged_readback.cpp'],
+	include_directories: [srcdir],
+)
+test('staged-readback', test_staged_readback)
+
 if drm_dep.found()
 	test_drm_format_selection = executable(
 		'test_drm_format_selection',
