@@ -2017,7 +2017,7 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 		{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.srcAccessMask = state.dirty ? write_bits : 0u,
-			.dstAccessMask = isHostRead ? VK_ACCESS_HOST_READ_BIT :
+			.dstAccessMask = isHostRead ? VkAccessFlags( VK_ACCESS_HOST_READ_BIT ) :
 				flush ? 0u : read_bits | write_bits,
 			.oldLayout = state.discarded ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
 			.newLayout = isPresent ? GetBackend()->GetPresentLayout() : VK_IMAGE_LAYOUT_GENERAL,
