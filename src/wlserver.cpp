@@ -1803,6 +1803,9 @@ bool wlsession_init( void ) {
 	if ( wlserver.wlr.session == nullptr )
 	{
 		wl_log.errorf( "Failed to create session" );
+		g_trusted_wayland_broker.reset();
+		wl_display_destroy( wlserver.display );
+		wlserver.display = nullptr;
 		return false;
 	}
 

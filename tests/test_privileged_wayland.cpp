@@ -1,4 +1,5 @@
 #include "wayland_security.hpp"
+#include "x11_control_policy.hpp"
 #include "xwayland_security.hpp"
 
 #include <wayland-client-core.h>
@@ -12,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <span>
 #include <string>
@@ -254,6 +256,67 @@ void test_global_policy( TestState &state )
 		"negative control: invalid broker capability fails closed" );
 }
 
+size_t count_open_fds()
+{
+	return static_cast<size_t>( std::distance(
+		std::filesystem::directory_iterator( "/proc/self/fd" ),
+		std::filesystem::directory_iterator() ) );
+}
+
+void test_malformed_broker_response( TestState &state )
+{
+	int broker[2] = { -1, -1 };
+	int payload[2] = { -1, -1 };
+	state.check( socketpair( AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, broker ) == 0,
+		"create malformed broker fixture" );
+	state.check( pipe2( payload, O_CLOEXEC ) == 0,
+		"create malformed broker fd payload" );
+	if ( broker[0] < 0 || payload[0] < 0 )
+	{
+		for ( int fd : broker )
+			if ( fd >= 0 )
+				close( fd );
+		for ( int fd : payload )
+			if ( fd >= 0 )
+				close( fd );
+		return;
+	}
+
+	const size_t before = count_open_fds();
+	std::thread server( [peer = broker[1], sent_fd = payload[0]]()
+	{
+		char request = 0;
+		if ( recv( peer, &request, sizeof( request ), 0 ) != sizeof( request ) )
+			return;
+
+		char invalid_response = '!';
+		iovec iov = { .iov_base = &invalid_response, .iov_len = 1 };
+		std::array<char, CMSG_SPACE( sizeof( int ) )> control = {};
+		msghdr message = {};
+		message.msg_iov = &iov;
+		message.msg_iovlen = 1;
+		message.msg_control = control.data();
+		message.msg_controllen = control.size();
+		cmsghdr *header = CMSG_FIRSTHDR( &message );
+		header->cmsg_level = SOL_SOCKET;
+		header->cmsg_type = SCM_RIGHTS;
+		header->cmsg_len = CMSG_LEN( sizeof( int ) );
+		std::memcpy( CMSG_DATA( header ), &sent_fd, sizeof( sent_fd ) );
+		sendmsg( peer, &message, MSG_NOSIGNAL );
+	} );
+
+	state.check( gamescope::wayland_security::request_trusted_client_fd( broker[0] ) < 0,
+		"malformed broker response fails closed" );
+	server.join();
+	state.check( count_open_fds() == before,
+		"negative control: malformed SCM_RIGHTS response does not leak its received fd" );
+
+	close( broker[0] );
+	close( broker[1] );
+	close( payload[0] );
+	close( payload[1] );
+}
+
 struct Listener
 {
 	int fd = -1;
@@ -347,13 +410,28 @@ void test_xwayland_listeners( TestState &state )
 	rmdir( directory );
 }
 
+void test_x11_control_atoms( TestState &state )
+{
+	for ( std::string_view atom : gamescope::x11_control_policy::kLegacyControlAtoms )
+	{
+		state.check( !gamescope::x11_control_policy::dispatches_effect( atom ),
+			"untrusted X11 property set has no control effect by default" );
+		state.check( gamescope::x11_control_policy::dispatches_effect( atom, true ),
+			"positive control: explicit legacy mode dispatches the control effect" );
+	}
+	state.check( !gamescope::x11_control_policy::dispatches_effect( "TEST_UNRELATED_PROPERTY", true ),
+		"negative control: an unrelated property is not a legacy control atom" );
+}
+
 } // namespace
 
 int main()
 {
 	TestState state;
 	test_global_policy( state );
+	test_malformed_broker_response( state );
 	test_xwayland_listeners( state );
+	test_x11_control_atoms( state );
 	if ( state.failures != 0 )
 		std::fprintf( stderr, "privileged-wayland failures=%d\n", state.failures );
 	return state.failures == 0 ? 0 : 1;

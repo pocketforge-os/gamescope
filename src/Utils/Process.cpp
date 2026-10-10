@@ -285,9 +285,8 @@ namespace gamescope::Process
             }
         }
 
-        // Keep the child behind the parent-side publication callback. This is
-        // used when the child can immediately create a Wayland peer whose
-        // admission depends on the PID returned to the parent.
+        // Keep the child behind the parent-side publication callback when a
+        // caller must publish state before the child can continue.
         int nParentReadyPipe[2] = { -1, -1 };
         if ( fnParentPostFork )
         {

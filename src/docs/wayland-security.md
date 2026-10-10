@@ -31,6 +31,28 @@ registry-name obscurity is not part of the design. Primary application commands
 remain on the public connection path and are not trusted merely because
 Gamescope launched them.
 
+## Legacy X11 control properties
+
+PocketForge builds with the `legacy_x11_control_atoms` Meson option disabled by
+default. In that configuration, Gamescope does not intern or act on these X11
+properties:
+
+- `STEAM_OVERLAY`
+- `GAMESCOPE_EXTERNAL_OVERLAY`
+- `STEAM_INPUT_FOCUS`
+- `GAMESCOPECTRL_BASELAYER_APPID`
+- `GAMESCOPECTRL_BASELAYER_WINDOW`
+- `GAMESCOPECTRL_REQUEST_SCREENSHOT`
+- `GAMESCOPECTRL_DEBUG_REQUEST_SCREENSHOT`
+
+The disabled code includes initial window-map reads as well as later property
+notifications. Consequently, an X11 client cannot classify itself as system UI,
+redirect focus, or invoke the legacy `/tmp/gamescope.png` capture path. System
+overlays use layer-shell over a provenance-checked Wayland connection instead.
+The option is an explicit compatibility escape hatch for deployments that put a
+Steam client and all other X11 clients in one trusted domain; it must not be
+enabled for PocketForge images.
+
 ## Xwayland transport boundary
 
 At wlroots commit `edbc105b776f4735924e46666b23969c8551f54f`,

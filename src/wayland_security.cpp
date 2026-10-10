@@ -210,22 +210,42 @@ int request_trusted_client_fd( int broker_fd )
 	message.msg_control = control.data();
 	message.msg_controllen = control.size();
 	const ssize_t amount = recvmsg( broker_fd, &message, MSG_CMSG_CLOEXEC );
-	if ( amount != sizeof( response ) || response != kMintResponse ||
-		( message.msg_flags & ( MSG_CTRUNC | MSG_TRUNC ) ) )
-		return -1;
-
+	bool valid = amount == sizeof( response ) && response == kMintResponse &&
+		!( message.msg_flags & ( MSG_CTRUNC | MSG_TRUNC ) );
 	int received_fd = -1;
 	for ( cmsghdr *header = CMSG_FIRSTHDR( &message ); header;
 		header = CMSG_NXTHDR( &message, header ) )
 	{
 		if ( header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS ||
-			header->cmsg_len != CMSG_LEN( sizeof( int ) ) || received_fd >= 0 )
+			header->cmsg_len < CMSG_LEN( 0 ) )
 		{
-			if ( received_fd >= 0 )
-				close( received_fd );
-			return -1;
+			valid = false;
+			continue;
 		}
-		std::memcpy( &received_fd, CMSG_DATA( header ), sizeof( received_fd ) );
+
+		const size_t payload_size = header->cmsg_len - CMSG_LEN( 0 );
+		if ( payload_size == 0 || payload_size % sizeof( int ) != 0 )
+			valid = false;
+		for ( size_t offset = 0; offset + sizeof( int ) <= payload_size; offset += sizeof( int ) )
+		{
+			int fd = -1;
+			std::memcpy( &fd, reinterpret_cast<char *>( CMSG_DATA( header ) ) + offset, sizeof( fd ) );
+			if ( received_fd >= 0 )
+			{
+				valid = false;
+				close( fd );
+			}
+			else
+			{
+				received_fd = fd;
+			}
+		}
+	}
+	if ( !valid || received_fd < 0 )
+	{
+		if ( received_fd >= 0 )
+			close( received_fd );
+		return -1;
 	}
 	return received_fd;
 }

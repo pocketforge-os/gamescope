@@ -113,6 +113,7 @@ src = [
   'edid.cpp',
   'wlserver.cpp',
   'wayland_security.cpp',
+  'x11_control_policy.cpp',
   'xwayland_security.cpp',
   'vblankmanager.cpp',
   'rendervulkan.cpp',
@@ -158,6 +159,7 @@ gamescope_cpp_args += '-DHAVE_SDL2=@0@'.format(sdl2_dep.found().to_int())
 gamescope_cpp_args += '-DHAVE_AVIF=@0@'.format(avif_dep.found().to_int())
 gamescope_cpp_args += '-DHAVE_LIBCAP=@0@'.format(cap_dep.found().to_int())
 gamescope_cpp_args += '-DHAVE_LIBEIS=@0@'.format(eis_dep.found().to_int())
+gamescope_cpp_args += '-DHAVE_LEGACY_X11_CONTROL_ATOMS=@0@'.format(get_option('legacy_x11_control_atoms').to_int())
 gamescope_cpp_args += '-DHAVE_SCRIPTING=1'
 
 src += spirv_shaders
