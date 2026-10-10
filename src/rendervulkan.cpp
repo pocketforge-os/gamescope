@@ -128,6 +128,7 @@ VulkanOutput_t g_output;
 static std::atomic<uint64_t> s_compositionDispatches = 0;
 static std::atomic<uint64_t> s_outputRotations = 0;
 static std::atomic<uint64_t> s_stagingCopies = 0;
+static std::atomic<uint64_t> s_stagedReadbackEligibleFrames = 0;
 static std::atomic<uint64_t> s_pipelineCompileId = 0;
 
 VulkanOutputCounters vulkan_get_output_counters()
@@ -1983,6 +1984,7 @@ void CVulkanCmdBuffer::markDirty(CVulkanTexture *image)
 void CVulkanCmdBuffer::insertBarrier(bool flush)
 {
 	std::vector<VkImageMemoryBarrier> barriers;
+	bool hasHostReadBarrier = false;
 
 	uint32_t externalQueue = m_device->supportsModifiers() ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_EXTERNAL_KHR;
 
@@ -2006,6 +2008,7 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 
 		if (!state.discarded && !state.dirty && !state.needsImport && !isExport && !isPresent)
 			continue;
+		hasHostReadBarrier |= isHostRead;
 
 		const VkAccessFlags write_bits = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
 		const VkAccessFlags read_bits = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
@@ -2035,7 +2038,9 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 	}
 
 	// TODO replace VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
-	m_device->vk.CmdPipelineBarrier(m_cmdBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+	const VkPipelineStageFlags destinationStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
+		( hasHostReadBarrier ? VK_PIPELINE_STAGE_HOST_BIT : VkPipelineStageFlags( 0 ) );
+	m_device->vk.CmdPipelineBarrier(m_cmdBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, destinationStages,
 									0, 0, nullptr, 0, nullptr, barriers.size(), barriers.data());
 }
 
@@ -4789,8 +4794,12 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 
 	bool stagedCopy = false;
 	bool stagedReadback = false;
-	const uint64_t stagedReadbackFrame =
-		s_compositionDispatches.load( std::memory_order_relaxed ) + 1;
+	const std::optional<uint64_t> stagedReadbackFrame =
+		gamescope::staged_readback::next_eligible_frame(
+			s_stagedReadbackEligibleFrames,
+			outputComposition &&
+			outputMode == gamescope::output_staging::OutputMode::Staged &&
+			!partial && gamescope::staged_readback::enabled() );
 	const uint32_t stagedReadbackRing = g_output.nOutImage;
 	gamescope::Rc<CVulkanTexture> stagedReadbackOptimal;
 	gamescope::Rc<CVulkanTexture> stagedReadbackLinear;
@@ -4799,31 +4808,46 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 		gamescope::Rc<CVulkanTexture> scanoutImage = partial
 			? g_output.outputImagesPartialOverlay[ g_output.nOutImage ]
 			: g_output.outputImages[ g_output.nOutImage ];
-		if ( !partial && gamescope::staged_readback::enabled() &&
-			gamescope::staged_readback::should_sample( stagedReadbackFrame ) &&
-			ensureStagedReadbackTexture( g_output.stagedReadbackOptimal, stagingSource ) &&
-			ensureStagedReadbackTexture( g_output.stagedReadbackLinear, scanoutImage ) )
+		if ( stagedReadbackFrame &&
+			gamescope::staged_readback::should_sample( *stagedReadbackFrame ) )
 		{
-			stagedReadbackOptimal = g_output.stagedReadbackOptimal.get();
-			stagedReadbackLinear = g_output.stagedReadbackLinear.get();
-			const bool optimalExtentMatches =
-				stagingSource->width() == stagedReadbackOptimal->width() &&
-				stagingSource->height() == stagedReadbackOptimal->height();
-			const bool linearExtentMatches =
-				scanoutImage->width() == stagedReadbackLinear->width() &&
-				scanoutImage->height() == stagedReadbackLinear->height();
-			if ( optimalExtentMatches && linearExtentMatches )
+			const bool optimalReady = ensureStagedReadbackTexture(
+				g_output.stagedReadbackOptimal, stagingSource );
+			const bool linearReady = ensureStagedReadbackTexture(
+				g_output.stagedReadbackLinear, scanoutImage );
+			if ( optimalReady && linearReady )
 			{
-				cmdBuffer->copyImage( stagingSource, stagedReadbackOptimal );
-				stagedReadback = true;
+				stagedReadbackOptimal = g_output.stagedReadbackOptimal.get();
+				stagedReadbackLinear = g_output.stagedReadbackLinear.get();
+				const bool optimalExtentMatches =
+					stagingSource->width() == stagedReadbackOptimal->width() &&
+					stagingSource->height() == stagedReadbackOptimal->height();
+				const bool linearExtentMatches =
+					scanoutImage->width() == stagedReadbackLinear->width() &&
+					scanoutImage->height() == stagedReadbackLinear->height();
+				if ( optimalExtentMatches && linearExtentMatches )
+				{
+					cmdBuffer->copyImage( stagingSource, stagedReadbackOptimal );
+					stagedReadback = true;
+				}
+				else
+				{
+					vk_log.errorf( "STAGED_READBACK_PAIR state=invalid frame=%" PRIu64
+						" ring=%u reason=extent-mismatch optimal=%ux%u/%ux%u"
+						" linear=%ux%u/%ux%u",
+						*stagedReadbackFrame, stagedReadbackRing,
+						stagingSource->width(), stagingSource->height(),
+						stagedReadbackOptimal->width(), stagedReadbackOptimal->height(),
+						scanoutImage->width(), scanoutImage->height(),
+						stagedReadbackLinear->width(), stagedReadbackLinear->height() );
+				}
 			}
 			else
 			{
-				vk_log.errorf( "staged readback extent mismatch optimal=%ux%u/%ux%u linear=%ux%u/%ux%u",
-					stagingSource->width(), stagingSource->height(),
-					stagedReadbackOptimal->width(), stagedReadbackOptimal->height(),
-					scanoutImage->width(), scanoutImage->height(),
-					stagedReadbackLinear->width(), stagedReadbackLinear->height() );
+				vk_log.errorf( "STAGED_READBACK_PAIR state=invalid frame=%" PRIu64
+					" ring=%u reason=allocation optimal_ready=%d linear_ready=%d",
+					*stagedReadbackFrame, stagedReadbackRing,
+					optimalReady, linearReady );
 			}
 		}
 		cmdBuffer->copyImage( stagingSource, scanoutImage );
@@ -4836,14 +4860,14 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	if ( stagedReadback )
 	{
 		g_device.wait( sequence, false );
-		const bool optimalComplete = logStagedReadback( stagedReadbackFrame, stagedReadbackRing,
+		const bool optimalComplete = logStagedReadback( *stagedReadbackFrame, stagedReadbackRing,
 			"optimal-storage", stagedReadbackOptimal );
-		const bool linearComplete = logStagedReadback( stagedReadbackFrame, stagedReadbackRing,
+		const bool linearComplete = logStagedReadback( *stagedReadbackFrame, stagedReadbackRing,
 			"linear-export", stagedReadbackLinear );
 		vk_log.infof( "STAGED_READBACK_PAIR state=%s frame=%" PRIu64
 			" ring=%u source=optimal-storage target=linear-export",
 			optimalComplete && linearComplete ? "complete" : "invalid",
-			stagedReadbackFrame, stagedReadbackRing );
+			*stagedReadbackFrame, stagedReadbackRing );
 	}
 	if ( outputComposition )
 	{

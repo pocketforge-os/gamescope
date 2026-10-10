@@ -72,4 +72,12 @@ bool should_sample( uint64_t frame )
 	return frame == 1 || ( frame <= 600 && frame % 60 == 0 );
 }
 
+std::optional<uint64_t> next_eligible_frame( std::atomic<uint64_t> &counter,
+	bool eligible )
+{
+	if ( !eligible )
+		return std::nullopt;
+	return counter.fetch_add( 1, std::memory_order_relaxed ) + 1;
+}
+
 } // namespace gamescope::staged_readback

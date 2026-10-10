@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -38,5 +39,7 @@ std::optional<Summary> summarizeMapped( const uint8_t *allocation,
 
 bool enabled();
 bool should_sample( uint64_t frame );
+std::optional<uint64_t> next_eligible_frame( std::atomic<uint64_t> &counter,
+	bool eligible );
 
 } // namespace gamescope::staged_readback

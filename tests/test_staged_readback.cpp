@@ -1,6 +1,7 @@
 #include "staged_readback.hpp"
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -77,6 +78,15 @@ int main()
 	assert( should_sample( 60 ) );
 	assert( should_sample( 600 ) );
 	assert( !should_sample( 601 ) );
+
+	// Partial-overlay composites are not eligible for paired readback and must
+	// not consume the full-frame sampling schedule.
+	std::atomic<uint64_t> eligibleFrames = 0;
+	assert( !next_eligible_frame( eligibleFrames, false ) );
+	assert( eligibleFrames.load() == 0 );
+	const std::optional<uint64_t> firstEligible = next_eligible_frame( eligibleFrames, true );
+	assert( firstEligible && *firstEligible == 1 );
+	assert( should_sample( *firstEligible ) );
 
 	unsetenv( "GAMESCOPE_STAGED_READBACK_DIAGNOSTICS" );
 	assert( !enabled() );
