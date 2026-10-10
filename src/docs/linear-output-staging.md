@@ -155,6 +155,14 @@ The environment variable is off by default and is intended only for bounded
 debug runs because each sampled frame adds a synchronous wait and two full-frame
 copies.
 
+`GAMESCOPE_COMPOSITOR_CONSTANT_RED=1` is a separate bring-up diagnostic. For
+the ordinary BLIT compute pipeline, it specializes the shader so every
+invocation writes opaque red to the normal composition target without taking
+any client-texture sampling branch. The dispatch, storage-image `imageStore`,
+rotation, staged copy, export, and KMS paths remain unchanged. Gamescope logs
+`CONSTANT_COMPOSITE state=enabled` when that specialized path is selected.
+The variable is unset by default and does not change normal composition.
+
 ## Errors and fallback policy
 
 Capability probing is deterministic and side-effect free. Allocation attempts

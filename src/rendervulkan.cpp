@@ -1318,6 +1318,8 @@ extern bool g_bSteamIsActiveWindow;
 VkPipeline CVulkanDevice::pipeline(ShaderType type, uint32_t layerCount, uint32_t ycbcrMask, uint32_t blur_layers, uint32_t colorspace_mask, uint32_t output_eotf, bool itm_enable)
 {
 	uint32_t effective_debug = g_uCompositeDebug;
+	if ( gamescope::compositor_diagnostics::constant_red_enabled() )
+		effective_debug = gamescope::compositor_diagnostics::with_constant_red_debug( effective_debug );
 	if ( g_bSteamIsActiveWindow )
 		effective_debug &= ~(CompositeDebugFlag::Heatmap | CompositeDebugFlag::Heatmap_MSWCG | CompositeDebugFlag::Heatmap_Hard);
 
@@ -4704,6 +4706,13 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	}
 	else
 	{
+		static std::atomic<bool> s_constantRedLogged = false;
+		if ( gamescope::compositor_diagnostics::constant_red_enabled() &&
+			!s_constantRedLogged.exchange( true, std::memory_order_relaxed ) )
+		{
+			vk_log.infof( "CONSTANT_COMPOSITE state=enabled color=red shader=BLIT"
+				" sampling=bypassed target=optimal-storage" );
+		}
 		cmdBuffer->bindPipeline( g_device.pipeline(SHADER_TYPE_BLIT, frameInfo->layerCount, frameInfo->ycbcrMask(), 0u, frameInfo->colorspaceMask(), outputTF ));
 		bind_all_layers(cmdBuffer.get(), frameInfo);
 		cmdBuffer->bindTarget(compositeImage);

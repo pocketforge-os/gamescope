@@ -418,6 +418,7 @@ namespace CompositeDebugFlag
 	static constexpr uint32_t Heatmap_MSWCG = 1u << 3;
 	static constexpr uint32_t Heatmap_Hard = 1u << 4;
 	static constexpr uint32_t Markers_Partial = 1u << 5;
+	static constexpr uint32_t ConstantRed = 1u << 6;
 	static constexpr uint32_t Tonemap_Reinhard = 1u << 7;
 };
 
