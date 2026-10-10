@@ -39,6 +39,7 @@
 #include "main.hpp"
 #include "steamcompmgr.hpp"
 #include "log.hpp"
+#include "compositor_diagnostics.hpp"
 #include "staged_readback.hpp"
 #include "Utils/Process.h"
 
