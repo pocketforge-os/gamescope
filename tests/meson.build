@@ -54,12 +54,17 @@ test_output_rotation = executable(
 )
 test('output-rotation', test_output_rotation)
 
-test_system_overlay_auth = executable(
-	'test_system_overlay_auth',
-	[srcdir / 'system_overlay_auth.cpp', 'test_system_overlay_auth.cpp'],
+test_privileged_wayland = executable(
+	'test_privileged_wayland',
+	[
+		srcdir / 'wayland_security.cpp',
+		srcdir / 'xwayland_security.cpp',
+		'test_privileged_wayland.cpp',
+	],
 	include_directories: [srcdir],
+	dependencies: [dep_wayland, wayland_server],
 )
-test('system-overlay-auth', test_system_overlay_auth)
+test('privileged-wayland', test_privileged_wayland)
 
 test_output_rotation_vulkan = executable(
 	'test_output_rotation_vulkan',

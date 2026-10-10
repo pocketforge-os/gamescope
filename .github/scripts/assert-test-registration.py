@@ -17,7 +17,7 @@ EXPECTED_COUNTS = {
 REQUIRED = {
 	"gamescope:output-staging",
 	"gamescope:output-rotation",
-	"gamescope:system-overlay-auth",
+	"gamescope:privileged-wayland",
 	"gamescope:output-rotation-vulkan",
 	"gamescope:output-staging-vulkan",
 	"gamescope:convar",
