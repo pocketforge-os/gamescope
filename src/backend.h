@@ -342,6 +342,10 @@ namespace gamescope
         virtual OwningRc<IBackendFb> ImportDmabufToBackend( wlr_dmabuf_attributes *pDmaBuf ) = 0;
 
         virtual bool UsesModifiers() const = 0;
+		// Whether compositor-owned output images are handed to a backend for
+		// scanout. Backends that only consume composition logically can opt out
+		// of dma-buf export and WSI scanout allocation.
+		virtual bool SupportsOutputImageScanout() const { return true; }
         virtual std::span<const uint64_t> GetSupportedModifiers( uint32_t uDrmFormat ) const = 0;
 		virtual std::span<const uint64_t> GetOutputModifiers( uint32_t uDrmFormat, bool bPartial ) const
 		{

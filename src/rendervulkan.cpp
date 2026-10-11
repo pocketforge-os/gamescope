@@ -2161,6 +2161,9 @@ static gamescope::output_staging::OutputPlan makeOutputPlan(
 	bool allowCombined = true )
 {
 	using namespace gamescope::output_staging;
+	if ( !GetBackend()->SupportsOutputImageScanout() )
+		return { OutputMode::Combined, InvalidModifier, Rejection::Accepted };
+
 	if ( !g_device.supportsModifiers() )
 		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoKmsFormat };
 
@@ -2255,6 +2258,15 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uin
 	if ( flags.bColorAttachment == true )
 	{
 		usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	}
+
+	// Flippable images imply dma-buf export below. A backend without output
+	// scanout keeps these compositor-owned images entirely inside Vulkan.
+	if ( flags.bFlippable == true )
+	{
+		const gamescope::output_staging::OutputAllocationPolicy allocationPolicy =
+			gamescope::output_staging::outputAllocationPolicy( GetBackend()->SupportsOutputImageScanout() );
+		flags.bFlippable = allocationPolicy.flippable;
 	}
 
 	if ( flags.bFlippable == true )
