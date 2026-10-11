@@ -122,6 +122,7 @@ src = [
   'output_rotation.cpp',
   'log.cpp',
   'ime.cpp',
+  'input_protocols.cpp',
   'mangoapp.cpp',
   'Timeline.cpp',
   'reshade_effect_manager.cpp',

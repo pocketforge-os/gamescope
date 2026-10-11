@@ -289,10 +289,43 @@ jobs:
         working-directory: ${{ env.MATERIALIZED_SOURCE_ROOT }}
         run: |
           set -euo pipefail
+          # Debian trixie ships wayland-protocols 1.44, but wlroots at this
+          # pin requires >=1.48. Since pocketforge-os/wlroots#4 (65c82494)
+          # wlroots resolves that fallback explicitly and fails closed, which
+          # covers standalone builds and parents that have not already
+          # resolved wayland-protocols. Inside gamescope the outer project
+          # resolves the host copy first (protocol/meson.build:7 and
+          # src/meson.build:17, both unversioned), and Meson then blocks both
+          # remaining paths to the pinned copy:
+          #   - configuring the nested subproject aborts on its unconditional
+          #     meson.override_dependency: "Tried to override dependency
+          #     'wayland-protocols' which has already been resolved or
+          #     overridden at .../protocol/meson.build:7" (run 38134400717);
+          #   - reading the XML from any subprojects/ path is a sandbox
+          #     violation: "Tried to grab file linux-dmabuf-v1.xml from a
+          #     nested subproject" (run 38130822628).
+          # So this job exposes the closure-pinned wayland-protocols (edge
+          # wlroots-wayland-protocols, already materialized in the source
+          # tree) from a copy outside subprojects/ through the cross
+          # pkg-config, letting every scope resolve 1.49 without ever
+          # configuring the nested project.
+          WP_SRC="$PWD/subprojects/wlroots/subprojects/wayland-protocols"
+          test -f "$WP_SRC/staging/cursor-shape/cursor-shape-v1.xml"
+          WP_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/wayland-protocols.XXXXXX")"
+          cp -a "$WP_SRC/." "$WP_DIR/"
+          PC_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/wayland-protocols-pc.XXXXXX")"
+          printf '%s\n' \
+            "prefix=$WP_DIR" \
+            'pkgdatadir=${prefix}' \
+            '' \
+            'Name: wayland-protocols' \
+            'Description: Wayland protocols (pocketforge source closure pin)' \
+            'Version: 1.49' \
+            > "$PC_DIR/wayland-protocols.pc"
           install -d /usr/local/libexec
           printf '%s\n' \
             '#!/bin/sh' \
-            'export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig' \
+            "export PKG_CONFIG_LIBDIR=$PC_DIR:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig" \
             'exec pkg-config "$@"' \
             > /usr/local/libexec/aarch64-pkg-config
           chmod +x /usr/local/libexec/aarch64-pkg-config
