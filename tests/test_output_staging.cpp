@@ -153,6 +153,15 @@ void test_staged_barrier_and_ownership_contract()
 	CHECK( reused.destinationAfter == QueueOwner::Foreign );
 }
 
+void test_output_allocation_respects_scanout_capability()
+{
+	const OutputAllocationPolicy scanout = outputAllocationPolicy( true );
+	CHECK( scanout.flippable );
+
+	const OutputAllocationPolicy headless = outputAllocationPolicy( false );
+	CHECK( !headless.flippable );
+}
+
 } // namespace
 
 int main()
@@ -163,5 +172,6 @@ int main()
 	test_frame_actions_preserve_bypass_screenshot_and_pipewire_source();
 	test_ring_reuse_and_failed_submission();
 	test_staged_barrier_and_ownership_contract();
+	test_output_allocation_respects_scanout_capability();
 	return g_failures == 0 ? 0 : 1;
 }
