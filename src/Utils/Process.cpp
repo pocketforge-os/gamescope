@@ -239,7 +239,7 @@ namespace gamescope::Process
         return close( nFd ) == 0;
     }
 
-    void CloseAllFds( std::span<int> nExcludedFds )
+    void CloseAllFds( std::span<const int> nExcludedFds )
     {
         DIR *pProcDir = opendir( "/proc/self/fd" );
         if ( !pProcDir )
@@ -269,7 +269,9 @@ namespace gamescope::Process
         }
     }
 
-    pid_t SpawnProcess( char **argv, std::function<void()> fnPreambleInChild, bool bDoubleFork, ParentPostForkCallback fnParentPostFork )
+    pid_t SpawnProcess( char **argv, std::function<void()> fnPreambleInChild,
+        bool bDoubleFork, ParentPostForkCallback fnParentPostFork,
+        std::span<const int> nInheritedFds )
     {
         // Create a pipe for the child to return the grandchild's
         // PID into.
@@ -283,9 +285,8 @@ namespace gamescope::Process
             }
         }
 
-        // Keep the child behind the parent-side publication callback. This is
-        // used when the child can immediately create a Wayland peer whose
-        // admission depends on the PID returned to the parent.
+        // Keep the child behind the parent-side publication callback when a
+        // caller must publish state before the child can continue.
         int nParentReadyPipe[2] = { -1, -1 };
         if ( fnParentPostFork )
         {
@@ -319,8 +320,7 @@ namespace gamescope::Process
         }
         else if ( nChild == 0 )
         {
-            std::array<int, 7> nExcludedFds =
-            {{
+            std::vector<int> nExcludedFds = {
                 STDIN_FILENO,
                 STDOUT_FILENO,
                 STDERR_FILENO,
@@ -328,8 +328,16 @@ namespace gamescope::Process
                 nPidPipe[1],
                 nParentReadyPipe[0], // -1 if !fnParentPostFork, which is fine.
                 nParentReadyPipe[1],
-            }};
+            };
+            nExcludedFds.insert( nExcludedFds.end(), nInheritedFds.begin(), nInheritedFds.end() );
             CloseAllFds( nExcludedFds );
+
+            for ( int nFd : nInheritedFds )
+            {
+                int nFlags = fcntl( nFd, F_GETFD );
+                if ( nFlags < 0 || fcntl( nFd, F_SETFD, nFlags & ~FD_CLOEXEC ) < 0 )
+                    _exit( 127 );
+            }
 
             if ( fnParentPostFork )
             {
@@ -426,12 +434,22 @@ namespace gamescope::Process
         }
     }
 
-    pid_t SpawnProcessInWatchdog( char **argv, bool bRespawn, std::function<void()> fnPreambleInChild, ParentPostForkCallback fnParentPostFork )
+    pid_t SpawnProcessInWatchdog( char **argv, bool bRespawn,
+        std::function<void()> fnPreambleInChild,
+        ParentPostForkCallback fnParentPostFork,
+        int nWaylandBrokerFd )
     {
         std::vector<char *> args;
+        std::string sWaylandBrokerFd;
         args.push_back( (char *)"gamescopereaper" );
         if ( bRespawn )
             args.push_back( (char *)"--respawn" );
+        if ( nWaylandBrokerFd >= 0 )
+        {
+            sWaylandBrokerFd = std::to_string( nWaylandBrokerFd );
+            args.push_back( (char *)"--wayland-broker-fd" );
+            args.push_back( sWaylandBrokerFd.data() );
+        }
         args.push_back( (char *)"--" );
         while ( *argv )
         {
@@ -439,7 +457,10 @@ namespace gamescope::Process
             argv++;
         }
         args.push_back( NULL );
-        return SpawnProcess( args.data(), fnPreambleInChild, false, fnParentPostFork );
+        const std::span<const int> inheritedFds = nWaylandBrokerFd >= 0
+            ? std::span<const int>( &nWaylandBrokerFd, 1 )
+            : std::span<const int>();
+        return SpawnProcess( args.data(), fnPreambleInChild, false, fnParentPostFork, inheritedFds );
     }
 
     bool HasCapSysNice()

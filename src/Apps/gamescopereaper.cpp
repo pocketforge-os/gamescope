@@ -1,9 +1,14 @@
 #include "../Utils/Process.h"
 #include "../log.hpp"
+#include "../wayland_security.hpp"
 
 #include <cassert>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include <getopt.h>
 #include <pthread.h>
@@ -33,10 +38,12 @@ namespace gamescope
             { "label", required_argument, nullptr, 0 },
             { "new-session-id", no_argument, nullptr, 0 },
             { "respawn", no_argument, nullptr, 0 },
+            { "wayland-broker-fd", required_argument, nullptr, 0 },
         };
 
         bool bRespawn = false;
         bool bNewSession = false;
+        std::optional<int> nWaylandBrokerFd;
         static bool s_bRun = true;
 
         int nOptIndex = -1;
@@ -63,6 +70,18 @@ namespace gamescope
             {
                 bNewSession = true;
             }
+            else if ( !strcmp( pszOptionName, "wayland-broker-fd" ) )
+            {
+                char *pszEnd = nullptr;
+                errno = 0;
+                long nParsedFd = strtol( optarg, &pszEnd, 10 );
+                if ( errno != 0 || !pszEnd || *pszEnd != '\0' || nParsedFd < 0 || nParsedFd > INT_MAX )
+                {
+                    s_ReaperLog.errorf( "Invalid Wayland broker fd." );
+                    return 1;
+                }
+                nWaylandBrokerFd = static_cast<int>( nParsedFd );
+            }
         }
 
         int nSubCommandArgc = 0;
@@ -84,12 +103,13 @@ namespace gamescope
         // Mirror some of the busy work we do in ProcessPreSpawn,
         // in case someone else wants to use this utility.
         Process::ResetSignals();
-        std::array<int, 3> nExcludedFds =
-        {{
+        std::vector<int> nExcludedFds = {
             STDIN_FILENO,
             STDOUT_FILENO,
             STDERR_FILENO,
-        }};
+        };
+        if ( nWaylandBrokerFd )
+            nExcludedFds.push_back( *nWaylandBrokerFd );
         Process::CloseAllFds( nExcludedFds );
 
         // We typically don't make a new sid, as we want to keep the same stdin/stdout
@@ -132,7 +152,33 @@ namespace gamescope
         Process::BecomeSubreaper();
         Process::SetDeathSignal( SIGTERM );
 
-        pid_t nPrimaryChild = Process::SpawnProcess( &argv[ nSubCommandArgc ] );
+        auto spawnPrimaryChild = [&]() -> pid_t
+        {
+            if ( !nWaylandBrokerFd )
+                return Process::SpawnProcess( &argv[ nSubCommandArgc ] );
+
+            int nWaylandFd = wayland_security::request_trusted_client_fd( *nWaylandBrokerFd );
+            if ( nWaylandFd < 0 )
+            {
+                s_ReaperLog.errorf( "Trusted Wayland broker refused a client connection." );
+                return -1;
+            }
+
+            const std::span<const int> inheritedFds( &nWaylandFd, 1 );
+            pid_t nChild = Process::SpawnProcess(
+                &argv[ nSubCommandArgc ],
+                [nWaylandFd]()
+                {
+                    const std::string sWaylandFd = std::to_string( nWaylandFd );
+                    if ( setenv( "WAYLAND_SOCKET", sWaylandFd.c_str(), 1 ) != 0 )
+                        _exit( 127 );
+                },
+                false, nullptr, inheritedFds );
+            Process::CloseFd( nWaylandFd );
+            return nChild;
+        };
+
+        pid_t nPrimaryChild = spawnPrimaryChild();
         assert( nPrimaryChild != 0 );
 
         if ( nPrimaryChild > 0 )
@@ -147,7 +193,9 @@ namespace gamescope
                 {
                     s_ReaperLog.infof( "\"%s\" process shut down. Restarting.", argv[ nSubCommandArgc ] );
 
-                    nPrimaryChild = Process::SpawnProcess( &argv[ nSubCommandArgc ] );
+                    nPrimaryChild = spawnPrimaryChild();
+                    if ( nPrimaryChild < 0 )
+                        break;
                     Process::WaitForAllChildren( nPrimaryChild );
                 }
             }

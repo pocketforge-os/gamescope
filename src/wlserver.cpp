@@ -56,7 +56,8 @@
 #include "presentation-time-protocol.h"
 
 #include "wlserver.hpp"
-#include "system_overlay_auth.hpp"
+#include "wayland_security.hpp"
+#include "xwayland_security.hpp"
 #include "compositor_diagnostics.hpp"
 #include "hdmi.h"
 #include "main.hpp"
@@ -94,6 +95,9 @@ extern gamescope::ConVar<bool> cv_drm_debug_disable_explicit_sync;
 struct wlserver_t wlserver = {
 	.touch_down_ids = {}
 };
+
+static gamescope::wayland_security::TrustedClientRegistry g_trusted_wayland_clients;
+static std::unique_ptr<gamescope::wayland_security::TrustedClientBroker> g_trusted_wayland_broker;
 
 struct wlserver_content_override {
 	gamescope_xwayland_server_t *server;
@@ -1692,49 +1696,14 @@ static void handle_wlr_log(enum wlr_log_importance importance, const char *fmt, 
 	wl_log.vlogf(prio, fmt, args);
 }
 
-static std::atomic<pid_t> g_mangoapp_reaper_pid{ 0 };
-
-static std::optional<pid_t> get_parent_pid( pid_t pid )
-{
-	if ( pid <= 0 )
-		return std::nullopt;
-
-	std::ifstream proc_stat_file( "/proc/" + std::to_string( pid ) + "/stat" );
-	if ( !proc_stat_file.is_open() )
-		return std::nullopt;
-
-	std::string proc_stat;
-	if ( !std::getline( proc_stat_file, proc_stat ) )
-		return std::nullopt;
-
-	const size_t last_paren = proc_stat.rfind( ')' );
-	if ( last_paren == std::string::npos )
-		return std::nullopt;
-
-	std::istringstream fields( proc_stat.substr( last_paren + 2 ) );
-	char state = 0;
-	pid_t parent_pid = 0;
-	if ( !( fields >> state >> parent_pid ) )
-		return std::nullopt;
-
-	return parent_pid;
-}
-
-void wlserver_set_mangoapp_reaper_pid( pid_t pid )
-{
-	g_mangoapp_reaper_pid.store( pid > 0 ? pid : 0, std::memory_order_release );
-}
-
 static bool is_trusted_system_overlay_client( const struct wl_client *client )
 {
-	if ( !client )
-		return false;
+	return g_trusted_wayland_clients.contains( client );
+}
 
-	pid_t pid = 0;
-	wl_client_get_credentials( const_cast<struct wl_client *>( client ), &pid, nullptr, nullptr );
-
-	return gamescope::system_overlay_auth::is_authenticated_peer(
-		pid, g_mangoapp_reaper_pid.load( std::memory_order_acquire ), get_parent_pid );
+int wlserver_take_trusted_wayland_broker_fd()
+{
+	return g_trusted_wayland_broker ? g_trusted_wayland_broker->take_launcher_fd() : -1;
 }
 
 void wlserver_set_output_info( const wlserver_output_info *info )
@@ -1755,10 +1724,10 @@ static bool filter_global(const struct wl_client *client, const struct wl_global
 {
 	const struct wl_interface *iface = wl_global_get_interface(global);
 
-	// Layer-shell is the compositor-owned system-overlay contract. Keep it
-	// unavailable to application clients; Xwayland's legacy external-overlay
-	// property remains composition-only and never grants native-plane trust.
-	if ( strcmp(iface->name, zwlr_layer_shell_v1_interface.name) == 0 )
+	// Privileged protocols are capabilities of compositor-issued connections,
+	// never of the public socket, a process name, or a peer PID. Xwayland's
+	// legacy external-overlay property remains composition-only.
+	if ( gamescope::wayland_security::is_privileged_global( iface->name ) )
 		return is_trusted_system_overlay_client( client );
 
 	if ( cv_drm_debug_disable_explicit_sync && iface->name == "wp_linux_drm_syncobj_manager_v1"sv )
@@ -1806,6 +1775,15 @@ bool wlsession_init( void ) {
 	wlserver.display = wl_display_create();
 	wlserver.event_loop = wl_display_get_event_loop( wlserver.display );
 	wlserver.wlr.headless_backend = wlr_headless_backend_create( wlserver.event_loop );
+	g_trusted_wayland_broker = gamescope::wayland_security::TrustedClientBroker::create(
+		wlserver.display, g_trusted_wayland_clients );
+	if ( !g_trusted_wayland_broker )
+	{
+		wl_log.errorf( "Unable to create trusted Wayland connection broker" );
+		wl_display_destroy( wlserver.display );
+		wlserver.display = nullptr;
+		return false;
+	}
 
 	wl_display_set_global_filter(wlserver.display, filter_global, nullptr);
 
@@ -1825,6 +1803,9 @@ bool wlsession_init( void ) {
 	if ( wlserver.wlr.session == nullptr )
 	{
 		wl_log.errorf( "Failed to create session" );
+		g_trusted_wayland_broker.reset();
+		wl_display_destroy( wlserver.display );
+		wlserver.display = nullptr;
 		return false;
 	}
 
@@ -1898,6 +1879,11 @@ gamescope_xwayland_server_t::gamescope_xwayland_server_t(wl_display *display, in
 		.force_xrandr_emulation = true,
 	};
 	xwayland_server = wlr_xwayland_server_create(display, &xwayland_options);
+	if ( !xwayland_server || !gamescope::xwayland_security::harden_listeners( xwayland_server->x_fd ) )
+	{
+		wl_log.errorf( "Refusing to start Xwayland without hardened listeners" );
+		abort();
+	}
 	wl_signal_add(&xwayland_server->events.ready, &xwayland_ready_listener);
 
 	output = wlr_headless_add_output(wlserver.wlr.headless_backend, 1280, 720);
@@ -2265,6 +2251,7 @@ bool wlserver_init( void ) {
 	{
 		wl_log.errorf("Failed to start backend");
 		wlr_backend_destroy( wlserver.wlr.multi_backend );
+		g_trusted_wayland_broker.reset();
 		wl_display_destroy(wlserver.display);
 		return false;
 	}
@@ -2437,6 +2424,7 @@ void wlserver_run(void)
 		wl_list_remove( &wlserver.session_active.link );
 #endif
 
+	g_trusted_wayland_broker.reset();
 	wl_display_destroy_clients(wlserver.display);
 	wl_display_destroy(wlserver.display);
     wlserver.display = NULL;

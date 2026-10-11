@@ -8,4 +8,5 @@ option('enable_gamescope',           type : 'boolean', value : true, description
 option('enable_gamescope_wsi_layer', type : 'boolean', value : true, description: 'Build Gamescope layer')
 option('enable_openvr_support',      type : 'boolean', value : true, description: 'OpenVR Integrations')
 option('enable_tests',               type : 'boolean', value : true, description: 'Build unit tests')
+option('legacy_x11_control_atoms',   type : 'boolean', value : false, description: 'Enable Steam-compatible X11 overlay, focus, and screenshot control properties')
 option('benchmark', type: 'feature', description: 'Benchmark tools')
