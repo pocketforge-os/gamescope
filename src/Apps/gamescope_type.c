@@ -87,7 +87,8 @@ int main()
 		return 1;
 	}
 	if (ime_manager == NULL) {
-		fprintf(stderr, "Compositor doesn't support input-method-unstable-v2\n");
+		fprintf(stderr,
+			"Gamescope input-method interface unavailable; launch with a compositor-issued trusted Wayland connection.\n");
 		return 1;
 	}
 
