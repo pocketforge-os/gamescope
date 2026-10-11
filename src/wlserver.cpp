@@ -65,6 +65,7 @@
 #include "color_helpers.h"
 #include "log.hpp"
 #include "ime.hpp"
+#include "input_protocols.hpp"
 #include "xwayland_ctx.hpp"
 #include "refresh_rate.h"
 #include "InputEmulation.h"
@@ -2200,6 +2201,12 @@ bool wlserver_init( void ) {
 	wl_signal_add(&wlserver.constraints->events.new_constraint, &wlserver.new_pointer_constraint);
 
 	wlr_data_device_manager_create(wlserver.display);
+
+	if ( !gamescope::input_protocols::create_globals( wlserver.display ) )
+	{
+		wl_log.errorf( "Failed to create input protocol globals" );
+		return false;
+	}
 
 	wlserver.xdg_shell = wlr_xdg_shell_create(wlserver.display, 3);
 	if (!wlserver.xdg_shell)
