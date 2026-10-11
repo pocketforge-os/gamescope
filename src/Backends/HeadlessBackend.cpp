@@ -189,6 +189,10 @@ namespace gamescope
 		{
 			return false;
 		}
+		virtual bool SupportsOutputImageScanout() const override
+		{
+			return false;
+		}
 		virtual std::span<const uint64_t> GetSupportedModifiers( uint32_t uDrmFormat ) const override
 		{
 			return std::span<const uint64_t>{};

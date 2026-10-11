@@ -63,6 +63,16 @@ struct OutputPlan
 	Rejection rejection = Rejection::Accepted;
 };
 
+struct OutputAllocationPolicy
+{
+	bool flippable;
+};
+
+inline constexpr OutputAllocationPolicy outputAllocationPolicy( bool supportsScanout )
+{
+	return { .flippable = supportsScanout };
+}
+
 OutputPlan chooseOutputPlan( const PlanInput &input );
 
 enum class ImageRole

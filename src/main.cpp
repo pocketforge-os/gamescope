@@ -1011,6 +1011,7 @@ int main(int argc, char **argv)
 	if ( !vulkan_make_output() )
 	{
 		fprintf( stderr, "vulkan_make_output failed\n" );
+		vulkan_stop_pipeline_compiler();
 		return 1;
 	}
 
