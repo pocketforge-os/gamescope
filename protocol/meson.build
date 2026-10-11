@@ -22,6 +22,10 @@ protocols = [
 	wl_protocol_dir / 'unstable/primary-selection/primary-selection-unstable-v1.xml',
 	wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
 	wl_protocol_dir / 'staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml',
+	wl_protocol_dir / 'staging/cursor-shape/cursor-shape-v1.xml',
+	# The generated cursor-shape private code references
+	# zwp_tablet_tool_v2_interface, so tablet-v2 must be generated too.
+	wl_protocol_dir / 'unstable/tablet/tablet-unstable-v2.xml',
 
 	'color-management-v1.xml',
 

@@ -68,6 +68,23 @@ test_privileged_wayland = executable(
 )
 test('privileged-wayland', test_privileged_wayland)
 
+test_input_protocol_globals = executable(
+	'test_input_protocol_globals',
+	[
+		srcdir / 'input_protocols.cpp',
+		'test_input_protocol_globals.cpp',
+		# Generated protocol sources, as in src/meson.build: they put the
+		# generated server headers (cursor-shape-v1-protocol.h, included by
+		# wlr_cursor_shape_v1.h) on the include path and provide
+		# zwp_tablet_tool_v2_interface for the cursor-shape private code.
+		protocols_server_src,
+	],
+	include_directories: [srcdir],
+	dependencies: [dep_wayland, wayland_server, wlroots_dep],
+	cpp_args: gamescope_cpp_args,
+)
+test('input-protocol-globals', test_input_protocol_globals)
+
 test_output_rotation_vulkan = executable(
 	'test_output_rotation_vulkan',
 	[spirv_shaders, 'test_output_rotation_vulkan.cpp'],
