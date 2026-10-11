@@ -417,6 +417,7 @@ VkInstance vulkan_get_instance(void);
 bool vulkan_init(VkInstance instance, VkSurfaceKHR surface);
 bool vulkan_init_formats(void);
 bool vulkan_make_output();
+void vulkan_stop_pipeline_compiler();
 
 gamescope::OwningRc<CVulkanTexture> vulkan_create_texture_from_dmabuf( struct wlr_dmabuf_attributes *pDMA, gamescope::OwningRc<gamescope::IBackendFb> pBackendFb );
 gamescope::OwningRc<CVulkanTexture> vulkan_create_texture_from_bits( uint32_t width, uint32_t height, uint32_t contentWidth, uint32_t contentHeight, uint32_t drmFormat, CVulkanTexture::createFlags texCreateFlags, void *bits );
@@ -801,6 +802,7 @@ public:
 	uint64_t submitInternal( CVulkanCmdBuffer* cmdBuf );
 	void wait(uint64_t sequence, bool reset = true);
 	void waitIdle(bool reset = true);
+	void stopPipelineCompiler();
 	void garbageCollect();
 	inline VkDescriptorSet descriptorSet()
 	{

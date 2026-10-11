@@ -111,3 +111,10 @@ test_vulkan_present_features = executable(
 	include_directories: [srcdir],
 )
 test('vulkan_present_features', test_vulkan_present_features)
+
+test_stop_thread = executable(
+	'test_stop_thread',
+	'test_stop_thread.cpp',
+	include_directories: [srcdir],
+)
+test('stop-thread', test_stop_thread)
