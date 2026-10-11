@@ -73,6 +73,11 @@ test_input_protocol_globals = executable(
 	[
 		srcdir / 'input_protocols.cpp',
 		'test_input_protocol_globals.cpp',
+		# Generated protocol sources, as in src/meson.build: they put the
+		# generated server headers (cursor-shape-v1-protocol.h, included by
+		# wlr_cursor_shape_v1.h) on the include path and provide
+		# zwp_tablet_tool_v2_interface for the cursor-shape private code.
+		protocols_server_src,
 	],
 	include_directories: [srcdir],
 	dependencies: [dep_wayland, wayland_server, wlroots_dep],

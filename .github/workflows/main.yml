@@ -296,9 +296,14 @@ jobs:
           # (cached)" without ever consulting wlroots's nested wrap fallback.
           # Expose the closure-pinned wayland-protocols (edge
           # wlroots-wayland-protocols, already materialized in the source
-          # tree) to the cross pkg-config instead.
-          WP_DIR="$PWD/subprojects/wlroots/subprojects/wayland-protocols"
-          test -f "$WP_DIR/staging/cursor-shape/cursor-shape-v1.xml"
+          # tree) to the cross pkg-config instead. The tree is copied out of
+          # subprojects/ first: Meson forbids the outer project from reading
+          # files inside a subproject directory ("Sandbox violation: Tried to
+          # grab file linux-dmabuf-v1.xml from a nested subproject").
+          WP_SRC="$PWD/subprojects/wlroots/subprojects/wayland-protocols"
+          test -f "$WP_SRC/staging/cursor-shape/cursor-shape-v1.xml"
+          WP_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/wayland-protocols.XXXXXX")"
+          cp -a "$WP_SRC/." "$WP_DIR/"
           PC_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/wayland-protocols-pc.XXXXXX")"
           printf '%s\n' \
             "prefix=$WP_DIR" \
