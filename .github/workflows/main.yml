@@ -289,10 +289,29 @@ jobs:
         working-directory: ${{ env.MATERIALIZED_SOURCE_ROOT }}
         run: |
           set -euo pipefail
+          # Debian trixie ships wayland-protocols 1.44, but wlroots at this
+          # pin requires >=1.48. Meson caches the parent project's unversioned
+          # wayland-protocols lookup in its dependency overrides, and the
+          # versioned subproject lookup then short-circuits to "found: NO
+          # (cached)" without ever consulting wlroots's nested wrap fallback.
+          # Expose the closure-pinned wayland-protocols (edge
+          # wlroots-wayland-protocols, already materialized in the source
+          # tree) to the cross pkg-config instead.
+          WP_DIR="$PWD/subprojects/wlroots/subprojects/wayland-protocols"
+          test -f "$WP_DIR/staging/cursor-shape/cursor-shape-v1.xml"
+          PC_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/wayland-protocols-pc.XXXXXX")"
+          printf '%s\n' \
+            "prefix=$WP_DIR" \
+            'pkgdatadir=${prefix}' \
+            '' \
+            'Name: wayland-protocols' \
+            'Description: Wayland protocols (pocketforge source closure pin)' \
+            'Version: 1.49' \
+            > "$PC_DIR/wayland-protocols.pc"
           install -d /usr/local/libexec
           printf '%s\n' \
             '#!/bin/sh' \
-            'export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig' \
+            "export PKG_CONFIG_LIBDIR=$PC_DIR:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig" \
             'exec pkg-config "$@"' \
             > /usr/local/libexec/aarch64-pkg-config
           chmod +x /usr/local/libexec/aarch64-pkg-config
