@@ -68,6 +68,7 @@ class SourceClosureTests(unittest.TestCase):
 			"gamescope:pipeline-compile-probe",
 			"gamescope:compositor-diagnostics",
 			"gamescope:drm-format-selection",
+			"gamescope:stop-thread",
 		]
 		names = gamescope_names + ["libdisplay-info:pocketforge-source-locator"]
 		names.extend(f"libdisplay-info:fixture-{index}" for index in range(64))
@@ -90,7 +91,7 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		self.assertIn("registered_gamescope=12", positive.stdout)
+		self.assertIn("registered_gamescope=13", positive.stdout)
 		shrink_negative = subprocess.run(
 			[sys.executable, str(TEST_REGISTRATION)],
 			input=fixture.replace("gamescope:output-staging\n", ""),
@@ -112,6 +113,20 @@ class SourceClosureTests(unittest.TestCase):
 		self.assertIn(
 			"missing required registered test: gamescope:output-staging",
 			substitution_negative.stderr,
+		)
+		stop_thread_negative = subprocess.run(
+			[sys.executable, str(TEST_REGISTRATION)],
+			input=fixture.replace(
+				"gamescope:stop-thread\n",
+				"gamescope:substituted-stop-thread-test\n",
+			),
+			text=True,
+			capture_output=True,
+		)
+		self.assertNotEqual(stop_thread_negative.returncode, 0, stop_thread_negative.stdout)
+		self.assertIn(
+			"missing required registered test: gamescope:stop-thread",
+			stop_thread_negative.stderr,
 		)
 
 	def setUp(self) -> None:
