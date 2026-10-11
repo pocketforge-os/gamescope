@@ -83,6 +83,14 @@ test_output_staging_vulkan = executable(
 )
 test('output-staging-vulkan', test_output_staging_vulkan)
 
+# Standalone lavapipe RCA probe. This intentionally is not a Meson test: its
+# exact-case failure is evidence, while the neighboring cases bisect the cause.
+vulkan_headless_allocation_probe = executable(
+	'vulkan_headless_allocation_probe',
+	'vulkan_headless_allocation_probe.cpp',
+	dependencies: [vulkan_dep],
+)
+
 unittest_src = []
 foreach src : gamescope_core_src + ['Script/Script.cpp', 'convar_script.cpp']
 	unittest_src += srcdir / src
