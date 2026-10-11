@@ -40,6 +40,7 @@
 #include "steamcompmgr.hpp"
 #include "log.hpp"
 #include "Utils/Process.h"
+#include "Utils/ThreadHelpers.h"
 
 #include "cs_composite_blit.h"
 #include "cs_composite_blur.h"
@@ -2036,6 +2037,16 @@ void CVulkanCmdBuffer::insertBarrier(bool flush)
 }
 
 CVulkanDevice g_device;
+
+void CVulkanDevice::stopPipelineCompiler()
+{
+	gamescope::StopAndJoin( m_pipelineThread );
+}
+
+void vulkan_stop_pipeline_compiler()
+{
+	g_device.stopPipelineCompiler();
+}
 
 static bool allDMABUFsEqual( wlr_dmabuf_attributes *pDMA )
 {
