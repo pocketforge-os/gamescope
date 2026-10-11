@@ -107,7 +107,8 @@ namespace gamescope
 
             if ( !( !m_bInitControl || m_pGamescopeControl ) || !( !m_bInitPrivate || m_pGamescopePrivate ) )
             {
-                fprintf( stderr, "Failed to get Gamescope interfaces\n" );
+                fprintf( stderr,
+                    "Required privileged Gamescope interface unavailable; launch with a compositor-issued trusted Wayland connection.\n" );
                 return false;
             }
 

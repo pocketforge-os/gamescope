@@ -116,6 +116,9 @@ struct steamcompmgr_win_t {
 	uint32_t appID = 0;
 	bool isOverlay = false;
 	bool isExternalOverlay = false;
+	// Visual external-overlay classification is broader than native-plane
+	// admission. Only compositor-authenticated system overlays set this bit.
+	bool isTrustedSystemOverlay = false;
 
 	bool bIsSteamPid = false;
 	bool bIsSteamWebHelperPid = false;

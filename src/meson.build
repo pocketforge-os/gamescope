@@ -112,8 +112,12 @@ src = [
   'main.cpp',
   'edid.cpp',
   'wlserver.cpp',
+  'wayland_security.cpp',
+  'x11_control_policy.cpp',
+  'xwayland_security.cpp',
   'vblankmanager.cpp',
   'rendervulkan.cpp',
+  'drm_device_selection.cpp',
   'output_staging.cpp',
   'output_rotation.cpp',
   'log.cpp',
@@ -133,6 +137,7 @@ libinput_dep = dependency('libinput', required: true)
 gamescope_cpp_args = []
 if drm_dep.found()
   src += 'Backends/DRMBackend.cpp'
+  src += 'drm_format_selection.cpp'
   src += 'modegen.cpp'
   required_wlroots_features += 'libinput_backend'
   liftoff_dep = dependency(
@@ -154,6 +159,7 @@ gamescope_cpp_args += '-DHAVE_SDL2=@0@'.format(sdl2_dep.found().to_int())
 gamescope_cpp_args += '-DHAVE_AVIF=@0@'.format(avif_dep.found().to_int())
 gamescope_cpp_args += '-DHAVE_LIBCAP=@0@'.format(cap_dep.found().to_int())
 gamescope_cpp_args += '-DHAVE_LIBEIS=@0@'.format(eis_dep.found().to_int())
+gamescope_cpp_args += '-DHAVE_LEGACY_X11_CONTROL_ATOMS=@0@'.format(get_option('legacy_x11_control_atoms').to_int())
 gamescope_cpp_args += '-DHAVE_SCRIPTING=1'
 
 src += spirv_shaders
@@ -219,7 +225,7 @@ if pipewire_dep.found()
   executable( 'gamescopestream', ['Apps/gamescopestream.cpp'], gamescope_core_src, gamescope_version, protocols_client_src, dependencies: [ pipewire_dep, dep_wayland, libdecor_dep, cap_dep ], install: true )
 endif
 
-executable('gamescopereaper', ['Apps/gamescopereaper.cpp', gamescope_core_src], gamescope_version, dependencies: [cap_dep], install:true )
+executable('gamescopereaper', ['Apps/gamescopereaper.cpp', 'wayland_security.cpp', gamescope_core_src], gamescope_version, dependencies: [cap_dep, wayland_server], install:true )
 
 benchmark_dep = dependency('benchmark', required: get_option('benchmark'), disabler: true)
 executable('gamescope_color_microbench', ['color_bench.cpp', 'color_helpers.cpp'], gamescope_core_src, gamescope_version, dependencies:[benchmark_dep, glm_dep, cap_dep])

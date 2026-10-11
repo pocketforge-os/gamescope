@@ -56,6 +56,9 @@
 #include "presentation-time-protocol.h"
 
 #include "wlserver.hpp"
+#include "wayland_security.hpp"
+#include "xwayland_security.hpp"
+#include "compositor_diagnostics.hpp"
 #include "hdmi.h"
 #include "main.hpp"
 #include "steamcompmgr.hpp"
@@ -76,8 +79,10 @@
 #include "gpuvis_trace_utils.h"
 
 #include <algorithm>
+#include <fstream>
 #include <list>
 #include <set>
+#include <sstream>
 
 static LogScope wl_log("wlserver");
 
@@ -90,6 +95,9 @@ extern gamescope::ConVar<bool> cv_drm_debug_disable_explicit_sync;
 struct wlserver_t wlserver = {
 	.touch_down_ids = {}
 };
+
+static gamescope::wayland_security::TrustedClientRegistry g_trusted_wayland_clients;
+static std::unique_ptr<gamescope::wayland_security::TrustedClientBroker> g_trusted_wayland_broker;
 
 struct wlserver_content_override {
 	gamescope_xwayland_server_t *server;
@@ -291,6 +299,18 @@ void xwayland_surface_commit(struct wlr_surface *wlr_surface) {
 	}
 
 	struct wlr_buffer *buf = wlr_buffer_lock( tex->buf );
+	if ( gamescope::compositor_diagnostics::enabled() )
+	{
+		struct wlr_dmabuf_attributes dmabuf = {};
+		const bool hasDmabuf = wlr_buffer_get_dmabuf( buf, &dmabuf );
+		wl_log.infof( "surface probe event=commit origin=%s surface=%p buffer=%p "
+			"kind=%s size=%dx%d",
+			wlserver_x11_surface_info ? "xwayland" :
+				( wlserver_xdg_surface_info ? "xdg" : "pending" ),
+			wlr_surface, buf,
+			gamescope::compositor_diagnostics::buffer_kind( hasDmabuf ),
+			buf->width, buf->height );
+	}
 
 	gpuvis_trace_printf( "xwayland_surface_commit wlr_surface %p", wlr_surface );
 
@@ -1676,6 +1696,16 @@ static void handle_wlr_log(enum wlr_log_importance importance, const char *fmt, 
 	wl_log.vlogf(prio, fmt, args);
 }
 
+static bool is_trusted_system_overlay_client( const struct wl_client *client )
+{
+	return g_trusted_wayland_clients.contains( client );
+}
+
+int wlserver_take_trusted_wayland_broker_fd()
+{
+	return g_trusted_wayland_broker ? g_trusted_wayland_broker->take_launcher_fd() : -1;
+}
+
 void wlserver_set_output_info( const wlserver_output_info *info )
 {
 	free(wlserver.output_info.description);
@@ -1693,6 +1723,12 @@ void wlserver_set_output_info( const wlserver_output_info *info )
 static bool filter_global(const struct wl_client *client, const struct wl_global *global, void *data)
 {
 	const struct wl_interface *iface = wl_global_get_interface(global);
+
+	// Privileged protocols are capabilities of compositor-issued connections,
+	// never of the public socket, a process name, or a peer PID. Xwayland's
+	// legacy external-overlay property remains composition-only.
+	if ( gamescope::wayland_security::is_privileged_global( iface->name ) )
+		return is_trusted_system_overlay_client( client );
 
 	if ( cv_drm_debug_disable_explicit_sync && iface->name == "wp_linux_drm_syncobj_manager_v1"sv )
 		return false;
@@ -1739,6 +1775,15 @@ bool wlsession_init( void ) {
 	wlserver.display = wl_display_create();
 	wlserver.event_loop = wl_display_get_event_loop( wlserver.display );
 	wlserver.wlr.headless_backend = wlr_headless_backend_create( wlserver.event_loop );
+	g_trusted_wayland_broker = gamescope::wayland_security::TrustedClientBroker::create(
+		wlserver.display, g_trusted_wayland_clients );
+	if ( !g_trusted_wayland_broker )
+	{
+		wl_log.errorf( "Unable to create trusted Wayland connection broker" );
+		wl_display_destroy( wlserver.display );
+		wlserver.display = nullptr;
+		return false;
+	}
 
 	wl_display_set_global_filter(wlserver.display, filter_global, nullptr);
 
@@ -1758,6 +1803,9 @@ bool wlsession_init( void ) {
 	if ( wlserver.wlr.session == nullptr )
 	{
 		wl_log.errorf( "Failed to create session" );
+		g_trusted_wayland_broker.reset();
+		wl_display_destroy( wlserver.display );
+		wlserver.display = nullptr;
 		return false;
 	}
 
@@ -1831,6 +1879,11 @@ gamescope_xwayland_server_t::gamescope_xwayland_server_t(wl_display *display, in
 		.force_xrandr_emulation = true,
 	};
 	xwayland_server = wlr_xwayland_server_create(display, &xwayland_options);
+	if ( !xwayland_server || !gamescope::xwayland_security::harden_listeners( xwayland_server->x_fd ) )
+	{
+		wl_log.errorf( "Refusing to start Xwayland without hardened listeners" );
+		abort();
+	}
 	wl_signal_add(&xwayland_server->events.ready, &xwayland_ready_listener);
 
 	output = wlr_headless_add_output(wlserver.wlr.headless_backend, 1280, 720);
@@ -2026,14 +2079,16 @@ void xdg_surface_new(struct wl_listener *listener, void *data)
 void layer_shell_surface_new(struct wl_listener *listener, void *data)
 {
 	struct wlr_layer_surface_v1 *layer_surface = (struct wlr_layer_surface_v1 *)data;
+	struct wl_client *client = wl_resource_get_client( layer_surface->resource );
 
-	wlserver_xdg_surface_info *surface_info = waylandy_type_surface_new(nullptr, layer_surface->surface);
+	wlserver_xdg_surface_info *surface_info = waylandy_type_surface_new(client, layer_surface->surface);
 	surface_info->destroy.notify = waylandy_surface_destroy;
 	wl_signal_add(&layer_surface->events.destroy, &surface_info->destroy);
 
 	surface_info->layer_surface = layer_surface;
 
 	surface_info->win->isExternalOverlay = true;
+	surface_info->win->isTrustedSystemOverlay = is_trusted_system_overlay_client( client );
 }
 
 #if HAVE_LIBEIS
@@ -2196,6 +2251,7 @@ bool wlserver_init( void ) {
 	{
 		wl_log.errorf("Failed to start backend");
 		wlr_backend_destroy( wlserver.wlr.multi_backend );
+		g_trusted_wayland_broker.reset();
 		wl_display_destroy(wlserver.display);
 		return false;
 	}
@@ -2368,6 +2424,7 @@ void wlserver_run(void)
 		wl_list_remove( &wlserver.session_active.link );
 #endif
 
+	g_trusted_wayland_broker.reset();
 	wl_display_destroy_clients(wlserver.display);
 	wl_display_destroy(wlserver.display);
     wlserver.display = NULL;

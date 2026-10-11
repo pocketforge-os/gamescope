@@ -19,6 +19,7 @@
 #include "backend.h"
 #include "output_rotation.hpp"
 #include "output_staging.hpp"
+#include "pipeline_compile_probe.hpp"
 
 #include "shaders/descriptor_set_constants.h"
 
@@ -868,7 +869,7 @@ protected:
 	bool createPools();
 	bool createShaders();
 	bool createScratchResources();
-	VkPipeline compilePipeline(uint32_t layerCount, uint32_t ycbcrMask, ShaderType type, uint32_t blur_layer_count, uint32_t composite_debug, uint32_t colorspace_mask, uint32_t output_eotf, bool itm_enable);
+	VkPipeline compilePipeline(uint32_t layerCount, uint32_t ycbcrMask, ShaderType type, uint32_t blur_layer_count, uint32_t composite_debug, uint32_t colorspace_mask, uint32_t output_eotf, bool itm_enable, gamescope::pipeline_compile_probe::Source source);
 	void compileAllPipelines(std::stop_token st);
 
 	VkDevice m_device = nullptr;

@@ -58,10 +58,16 @@ class SourceClosureTests(unittest.TestCase):
 		gamescope_names = [
 			"gamescope:output-staging",
 			"gamescope:output-rotation",
+			"gamescope:privileged-wayland",
 			"gamescope:output-rotation-vulkan",
 			"gamescope:output-staging-vulkan",
 			"gamescope:convar",
 			"gamescope:vulkan_present_features",
+			"gamescope:drm-device-selection",
+			"gamescope:drm-commit-probe",
+			"gamescope:pipeline-compile-probe",
+			"gamescope:compositor-diagnostics",
+			"gamescope:drm-format-selection",
 		]
 		names = gamescope_names + ["libdisplay-info:pocketforge-source-locator"]
 		names.extend(f"libdisplay-info:fixture-{index}" for index in range(64))
@@ -84,7 +90,7 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		self.assertIn("registered_gamescope=6", positive.stdout)
+		self.assertIn("registered_gamescope=12", positive.stdout)
 		shrink_negative = subprocess.run(
 			[sys.executable, str(TEST_REGISTRATION)],
 			input=fixture.replace("gamescope:output-staging\n", ""),

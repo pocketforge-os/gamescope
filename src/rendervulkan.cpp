@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <array>
 #include <bitset>
+#include <cinttypes>
+#include <chrono>
 #include <dlfcn.h>
 #include "vulkan_include.h"
 #include "Utils/Algorithm.h"
@@ -32,6 +34,7 @@
 #include "wlr_end.hpp"
 
 #include "rendervulkan.hpp"
+#include "vulkan_drm_node_policy.hpp"
 #include "vulkan_present_features.h"
 #include "main.hpp"
 #include "steamcompmgr.hpp"
@@ -124,6 +127,7 @@ VulkanOutput_t g_output;
 static std::atomic<uint64_t> s_compositionDispatches = 0;
 static std::atomic<uint64_t> s_outputRotations = 0;
 static std::atomic<uint64_t> s_stagingCopies = 0;
+static std::atomic<uint64_t> s_pipelineCompileId = 0;
 
 VulkanOutputCounters vulkan_get_output_counters()
 {
@@ -495,7 +499,7 @@ bool CVulkanDevice::createDevice()
 		};
 		vk.GetPhysicalDeviceProperties2( physDev(), &props2 );
 
-		if ( !GetBackend()->UsesVulkanSwapchain() && !drmProps.hasPrimary ) {
+		if ( gamescope::vulkan_drm_node_policy::requires_primary( GetBackend()->UsesVulkanSwapchain(), GetBackend()->IsSessionBased() ) && !drmProps.hasPrimary ) {
 			vk_log.errorf( "physical device has no primary node" );
 			return false;
 		}
@@ -1152,7 +1156,7 @@ VkSampler CVulkanDevice::sampler( SamplerState key )
 	return ret;
 }
 
-VkPipeline CVulkanDevice::compilePipeline(uint32_t layerCount, uint32_t ycbcrMask, ShaderType type, uint32_t blur_layer_count, uint32_t composite_debug, uint32_t colorspace_mask, uint32_t output_eotf, bool itm_enable)
+VkPipeline CVulkanDevice::compilePipeline(uint32_t layerCount, uint32_t ycbcrMask, ShaderType type, uint32_t blur_layer_count, uint32_t composite_debug, uint32_t colorspace_mask, uint32_t output_eotf, bool itm_enable, gamescope::pipeline_compile_probe::Source source)
 {
 	const std::array<VkSpecializationMapEntry, 7> specializationEntries = {{
 		{
@@ -1232,8 +1236,32 @@ VkPipeline CVulkanDevice::compilePipeline(uint32_t layerCount, uint32_t ycbcrMas
 	};
 
 	VkPipeline result;
+	const bool probe = gamescope::pipeline_compile_probe::enabled();
+	const uint64_t probeId = s_pipelineCompileId.fetch_add( 1, std::memory_order_relaxed ) + 1;
+	const auto probeStart = std::chrono::steady_clock::now();
+	if ( probe )
+	{
+		vk_log.infof( "pipeline compile id=%" PRIu64 " source=%s phase=start shader=%s(%u) layers=%u ycbcr=0x%x blur=%u debug=0x%x colorspace=0x%x eotf=%u itm=%u",
+			probeId,
+			gamescope::pipeline_compile_probe::source_name( source ),
+			gamescope::pipeline_compile_probe::shader_name( uint32_t( type ) ),
+			uint32_t( type ), layerCount, ycbcrMask, blur_layer_count, composite_debug,
+			colorspace_mask, output_eotf, uint32_t( itm_enable ) );
+	}
 
 	VkResult res = vk.CreateComputePipelines(device(), VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &result);
+	const auto probeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now() - probeStart ).count();
+	if ( probe )
+	{
+		vk_log.infof( "pipeline compile id=%" PRIu64 " source=%s phase=end shader=%s(%u) layers=%u ycbcr=0x%x blur=%u debug=0x%x colorspace=0x%x eotf=%u itm=%u result=%d elapsed_us=%lld",
+			probeId,
+			gamescope::pipeline_compile_probe::source_name( source ),
+			gamescope::pipeline_compile_probe::shader_name( uint32_t( type ) ),
+			uint32_t( type ), layerCount, ycbcrMask, blur_layer_count, composite_debug,
+			colorspace_mask, output_eotf, uint32_t( itm_enable ), int( res ),
+			static_cast<long long>( probeElapsedUs ) );
+	}
 	if (res != VK_SUCCESS) {
 		vk_errorf( res, "vkCreateComputePipelines failed" );
 		return VK_NULL_HANDLE;
@@ -1268,7 +1296,7 @@ void CVulkanDevice::compileAllPipelines(std::stop_token st)
 					if (blur_layers > layerCount)
 						continue;
 
-					VkPipeline newPipeline = compilePipeline(layerCount, ycbcrMask, info.shaderType, blur_layers, info.compositeDebug, info.colorspaceMask, info.outputEOTF, info.itmEnable);
+					VkPipeline newPipeline = compilePipeline(layerCount, ycbcrMask, info.shaderType, blur_layers, info.compositeDebug, info.colorspaceMask, info.outputEOTF, info.itmEnable, gamescope::pipeline_compile_probe::Source::Precompile);
 					{
 						std::lock_guard<std::mutex> lock(m_pipelineMutex);
 						PipelineInfo_t key = {info.shaderType, layerCount, ycbcrMask, blur_layers, info.compositeDebug};
@@ -1296,7 +1324,7 @@ VkPipeline CVulkanDevice::pipeline(ShaderType type, uint32_t layerCount, uint32_
 	auto search = m_pipelineMap.find(key);
 	if (search == m_pipelineMap.end())
 	{
-		VkPipeline result = compilePipeline(layerCount, ycbcrMask, type, blur_layers, effective_debug, colorspace_mask, output_eotf, itm_enable);
+		VkPipeline result = compilePipeline(layerCount, ycbcrMask, type, blur_layers, effective_debug, colorspace_mask, output_eotf, itm_enable, gamescope::pipeline_compile_probe::Source::Demand);
 		m_pipelineMap[key] = result;
 		return result;
 	}

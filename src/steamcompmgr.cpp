@@ -84,6 +84,7 @@
 #include "wlserver.hpp"
 #include "rendervulkan.hpp"
 #include "steamcompmgr.hpp"
+#include "x11_control_policy.hpp"
 #include "vblankmanager.hpp"
 #include "log.hpp"
 #include "Utils/Defer.h"
@@ -96,6 +97,7 @@
 #include "commit.h"
 #include "reshade_effect_manager.hpp"
 #include "BufferMemo.h"
+#include "compositor_diagnostics.hpp"
 #include "Utils/Process.h"
 #include "Utils/Algorithm.h"
 
@@ -1107,8 +1109,6 @@ bool g_bPendingFade = false;
 #define OPACITY_PROP		"_NET_WM_WINDOW_OPACITY"
 #define GAME_PROP			"STEAM_GAME"
 #define STEAM_PROP			"STEAM_BIGPICTURE"
-#define OVERLAY_PROP		"STEAM_OVERLAY"
-#define EXTERNAL_OVERLAY_PROP		"GAMESCOPE_EXTERNAL_OVERLAY"
 #define GAMES_RUNNING_PROP 	"STEAM_GAMES_RUNNING"
 #define SCREEN_SCALE_PROP	"STEAM_SCREEN_SCALE"
 #define SCREEN_MAGNIFICATION_PROP	"STEAM_SCREEN_MAGNIFICATION"
@@ -1394,6 +1394,8 @@ import_commit (
 	bool fifo )
 {
 	gamescope::Rc<commit_t> commit = new commit_t;
+	struct wlr_dmabuf_attributes diagnosticDmabuf = {0};
+	const bool diagnosticHasDmabuf = wlr_buffer_get_dmabuf( buf, &diagnosticDmabuf );
 
 	commit->win_seq = w->seq;
 	commit->surf = surf;
@@ -1417,6 +1419,11 @@ import_commit (
 	{
 		// Going from OwningRc -> Rc now.
 		commit->vulkanTex = pTexture;
+		if ( gamescope::compositor_diagnostics::enabled() )
+			xwm_log.infof( "surface probe event=import appid=%u buffer=%p kind=%s "
+				"size=%dx%d cached=1 success=1", w->appID, buf,
+				gamescope::compositor_diagnostics::buffer_kind( diagnosticHasDmabuf ),
+				buf->width, buf->height );
 		return commit;
 	}
 
@@ -1431,12 +1438,22 @@ import_commit (
 
 	if ( pOwnedTexture == nullptr ) {
 		// Failed to create Vulkan texture from Wayland buffer for some reason.
+		if ( gamescope::compositor_diagnostics::enabled() )
+			xwm_log.infof( "surface probe event=import appid=%u buffer=%p kind=%s "
+				"size=%dx%d cached=0 success=0", w->appID, buf,
+				gamescope::compositor_diagnostics::buffer_kind( diagnosticHasDmabuf ),
+				buf->width, buf->height );
 		return nullptr;
 	}
 
 	commit->vulkanTex = pOwnedTexture;
 
 	s_BufferMemos.MemoizeBuffer( buf, std::move( pOwnedTexture ) );
+	if ( gamescope::compositor_diagnostics::enabled() )
+		xwm_log.infof( "surface probe event=import appid=%u buffer=%p kind=%s "
+			"size=%dx%d cached=0 success=1", w->appID, buf,
+			gamescope::compositor_diagnostics::buffer_kind( diagnosticHasDmabuf ),
+			buf->width, buf->height );
 
 	return commit;
 }
@@ -2136,7 +2153,7 @@ paint_window_commit( const gamescope::Rc<commit_t> &lastCommit, steamcompmgr_win
 	layer->clientTransform = lastCommit->clientTransform;
 	layer->nativePlaneRole = ( flags & PaintWindowFlag::BasePlane )
 		? gamescope::output_rotation::LayerRole::Base
-		: ( ( w->isOverlay || w->isExternalOverlay )
+		: ( w->isTrustedSystemOverlay
 			? gamescope::output_rotation::LayerRole::SystemOverlay
 			: gamescope::output_rotation::LayerRole::Unknown );
 
@@ -4849,7 +4866,10 @@ map_win(xwayland_ctx_t* ctx, Window id, unsigned long sequence)
 	get_win_title( ctx, w, XA_WM_NAME );
 	get_win_icon( ctx, w );
 
+	w->inputFocusMode = 0;
+#if HAVE_LEGACY_X11_CONTROL_ATOMS
 	w->inputFocusMode = get_prop(ctx, w->xwayland().id, ctx->atoms.steamInputFocusAtom, 0);
+#endif
 
 	w->isSteamStreamingClient = get_prop(ctx, w->xwayland().id, ctx->atoms.steamStreamingClientAtom, 0);
 	w->isSteamStreamingClientVideo = get_prop(ctx, w->xwayland().id, ctx->atoms.steamStreamingClientVideoAtom, 0);
@@ -4876,8 +4896,12 @@ map_win(xwayland_ctx_t* ctx, Window id, unsigned long sequence)
 	if ( w->isSteamLegacyBigPicture )
 		w->appID = 769;
 	
+	w->isOverlay = false;
+	w->isExternalOverlay = false;
+#if HAVE_LEGACY_X11_CONTROL_ATOMS
 	w->isOverlay = get_prop(ctx, w->xwayland().id, ctx->atoms.overlayAtom, 0);
 	w->isExternalOverlay = get_prop(ctx, w->xwayland().id, ctx->atoms.externalOverlayAtom, 0);
+#endif
 
 	// misyl: Disable appID for overlay types, as parts of the code don't expect that focus-wise.
 	// Fixes mangoapp usage when nested, and not in SteamOS.
@@ -4931,6 +4955,12 @@ map_win(xwayland_ctx_t* ctx, Window id, unsigned long sequence)
 	MakeFocusDirty();
 
 	set_wm_state( ctx, w->xwayland().id, ICCCM_NORMAL_STATE );
+	if ( gamescope::compositor_diagnostics::enabled() )
+	{
+		const auto &geometry = w->GetGeometry();
+		xwm_log.infof( "surface probe event=x-map xid=0x%lx appid=%u size=%dx%d sequence=%lu",
+			w->xwayland().id, w->appID, geometry.nWidth, geometry.nHeight, sequence );
+	}
 }
 
 static void
@@ -5167,6 +5197,7 @@ add_win(xwayland_ctx_t *ctx, Window id, Window prev, unsigned long sequence)
 
 	new_win->isOverlay = false;
 	new_win->isExternalOverlay = false;
+	new_win->isTrustedSystemOverlay = false;
 	new_win->isSteamLegacyBigPicture = false;
 	new_win->isSteamStreamingClient = false;
 	new_win->isSteamStreamingClientVideo = false;
@@ -5997,6 +6028,7 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
 			MakeFocusDirty();
 		}
 	}
+#if HAVE_LEGACY_X11_CONTROL_ATOMS
 	if (ev->atom == ctx->atoms.steamInputFocusAtom )
 	{
 		steamcompmgr_win_t * w = find_win(ctx, ev->window);
@@ -6006,6 +6038,7 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
 			MakeFocusDirty();
 		}
 	}
+#endif
 	if (ev->atom == ctx->atoms.steamTouchClickModeAtom )
 	{
 		gamescope::cv_touch_click_mode = (gamescope::TouchClickMode) get_prop(ctx, ctx->root, ctx->atoms.steamTouchClickModeAtom, 0u );
@@ -6041,6 +6074,7 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
 			w->bNeedsForwarding = true;
 		}
 	}
+#if HAVE_LEGACY_X11_CONTROL_ATOMS
 	if (ev->atom == ctx->atoms.gamescopeCtrlAppIDAtom )
 	{
 		get_prop( ctx, ctx->root, ctx->atoms.gamescopeCtrlAppIDAtom, vecFocuscontrolAppIDs );
@@ -6077,6 +6111,7 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
 			} );
 		}
 	}
+#endif
 	if (ev->atom == ctx->atoms.gameAtom)
 	{
 		steamcompmgr_win_t * w = find_win(ctx, ev->window);
@@ -6095,6 +6130,7 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
 			MakeFocusDirty();
 		}
 	}
+#if HAVE_LEGACY_X11_CONTROL_ATOMS
 	if (ev->atom == ctx->atoms.overlayAtom)
 	{
 		steamcompmgr_win_t * w = find_win(ctx, ev->window);
@@ -6117,6 +6153,7 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
 			MakeFocusDirty();
 		}
 	}
+#endif
 	if (ev->atom == ctx->atoms.winTypeAtom)
 	{
 		steamcompmgr_win_t * w = find_win(ctx, ev->window);
@@ -7847,11 +7884,15 @@ void init_xwayland_ctx(uint32_t serverId, gamescope_xwayland_server_t *xwayland_
 
 	/* get atoms */
 	ctx->atoms.steamAtom = XInternAtom(ctx->dpy, STEAM_PROP, false);
-	ctx->atoms.steamInputFocusAtom = XInternAtom(ctx->dpy, "STEAM_INPUT_FOCUS", false);
+#if HAVE_LEGACY_X11_CONTROL_ATOMS
+	ctx->atoms.steamInputFocusAtom = XInternAtom(ctx->dpy, gamescope::x11_control_policy::kSteamInputFocus.data(), false);
+#endif
 	ctx->atoms.steamTouchClickModeAtom = XInternAtom(ctx->dpy, "STEAM_TOUCH_CLICK_MODE", false);
 	ctx->atoms.gameAtom = XInternAtom(ctx->dpy, GAME_PROP, false);
-	ctx->atoms.overlayAtom = XInternAtom(ctx->dpy, OVERLAY_PROP, false);
-	ctx->atoms.externalOverlayAtom = XInternAtom(ctx->dpy, EXTERNAL_OVERLAY_PROP, false);
+#if HAVE_LEGACY_X11_CONTROL_ATOMS
+	ctx->atoms.overlayAtom = XInternAtom(ctx->dpy, gamescope::x11_control_policy::kSteamOverlay.data(), false);
+	ctx->atoms.externalOverlayAtom = XInternAtom(ctx->dpy, gamescope::x11_control_policy::kExternalOverlay.data(), false);
+#endif
 	ctx->atoms.opacityAtom = XInternAtom(ctx->dpy, OPACITY_PROP, false);
 	ctx->atoms.gamesRunningAtom = XInternAtom(ctx->dpy, GAMES_RUNNING_PROP, false);
 	ctx->atoms.screenScaleAtom = XInternAtom(ctx->dpy, SCREEN_SCALE_PROP, false);
@@ -7890,12 +7931,16 @@ void init_xwayland_ctx(uint32_t serverId, gamescope_xwayland_server_t *xwayland_
 	ctx->atoms.gamescopeFocusedAppAtom = XInternAtom( ctx->dpy, "GAMESCOPE_FOCUSED_APP", false );
 	ctx->atoms.gamescopeFocusedAppGfxAtom = XInternAtom( ctx->dpy, "GAMESCOPE_FOCUSED_APP_GFX", false );
 	ctx->atoms.gamescopeFocusedWindowAtom = XInternAtom( ctx->dpy, "GAMESCOPE_FOCUSED_WINDOW", false );
-	ctx->atoms.gamescopeCtrlAppIDAtom = XInternAtom(ctx->dpy, "GAMESCOPECTRL_BASELAYER_APPID", false);
-	ctx->atoms.gamescopeCtrlWindowAtom = XInternAtom(ctx->dpy, "GAMESCOPECTRL_BASELAYER_WINDOW", false);
+#if HAVE_LEGACY_X11_CONTROL_ATOMS
+	ctx->atoms.gamescopeCtrlAppIDAtom = XInternAtom(ctx->dpy, gamescope::x11_control_policy::kBaselayerAppId.data(), false);
+	ctx->atoms.gamescopeCtrlWindowAtom = XInternAtom(ctx->dpy, gamescope::x11_control_policy::kBaselayerWindow.data(), false);
+#endif
 	ctx->atoms.WMChangeStateAtom = XInternAtom(ctx->dpy, "WM_CHANGE_STATE", false);
 	ctx->atoms.gamescopeInputCounterAtom = XInternAtom(ctx->dpy, "GAMESCOPE_INPUT_COUNTER", false);
-	ctx->atoms.gamescopeScreenShotAtom = XInternAtom( ctx->dpy, "GAMESCOPECTRL_REQUEST_SCREENSHOT", false );
-	ctx->atoms.gamescopeDebugScreenShotAtom = XInternAtom( ctx->dpy, "GAMESCOPECTRL_DEBUG_REQUEST_SCREENSHOT", false );
+#if HAVE_LEGACY_X11_CONTROL_ATOMS
+	ctx->atoms.gamescopeScreenShotAtom = XInternAtom( ctx->dpy, gamescope::x11_control_policy::kRequestScreenshot.data(), false );
+	ctx->atoms.gamescopeDebugScreenShotAtom = XInternAtom( ctx->dpy, gamescope::x11_control_policy::kDebugRequestScreenshot.data(), false );
+#endif
 
 	ctx->atoms.gamescopeFocusDisplay = XInternAtom(ctx->dpy, "GAMESCOPE_FOCUS_DISPLAY", false);
 	ctx->atoms.gamescopeMouseFocusDisplay = XInternAtom(ctx->dpy, "GAMESCOPE_MOUSE_FOCUS_DISPLAY", false);
@@ -8354,7 +8399,22 @@ void LaunchNestedChildren( char **ppPrimaryChildArgv )
 	if ( g_bLaunchMangoapp )
 	{
 		char *ppMangoappArgv[] = { (char *)"mangoapp", NULL };
-		gamescope::Process::SpawnProcessInWatchdog( ppMangoappArgv, true );
+		int nWaylandBrokerFd = wlserver_take_trusted_wayland_broker_fd();
+		if ( nWaylandBrokerFd < 0 )
+		{
+			s_LaunchLogScope.errorf( "Refusing to launch mangoapp without a trusted Wayland broker." );
+			ShutdownGamescope();
+			return;
+		}
+
+		pid_t nMangoappReaperPid = gamescope::Process::SpawnProcessInWatchdog(
+			ppMangoappArgv, true, nullptr, nullptr, nWaylandBrokerFd );
+		gamescope::Process::CloseFd( nWaylandBrokerFd );
+		if ( nMangoappReaperPid < 0 )
+		{
+			s_LaunchLogScope.errorf( "Failed to launch mangoapp with trusted Wayland provenance." );
+			ShutdownGamescope();
+		}
 	}
 }
 
