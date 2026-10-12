@@ -60,6 +60,13 @@ def continued_meson_setups(step):
 
 
 def verify_workflow(workflow):
+    branch_filter = "    branches: [pocketforge, pocketforge-linear]"
+    if workflow.count(branch_filter) != 2:
+        raise ValueError(
+            "linear_default_branch_filters_missing "
+            f"expected=2 actual={workflow.count(branch_filter)}"
+        )
+
     if "permissions:\n  contents: read\n" not in workflow:
         raise ValueError("workflow_contents_permission_not_read_only")
 
