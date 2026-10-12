@@ -29,16 +29,23 @@ void main() {
     vec2 uv = vec2(coord);
     vec4 outputValue = vec4(0.0f);
 
-    if (checkDebugFlag(compositedebug_PlaneBorders))
-        outputValue = vec4(1.0f, 0.0f, 0.0f, 0.0f);
+    if (checkDebugFlag(compositedebug_ConstantRed)) {
+        // This flag is a pipeline specialization constant. The K diagnostic
+        // therefore exercises the same compute dispatch and imageStore while
+        // making every client texture sampling branch unreachable.
+        outputValue = vec4(1.0f, 0.0f, 0.0f, 1.0f);
+    } else {
+        if (checkDebugFlag(compositedebug_PlaneBorders))
+            outputValue = vec4(1.0f, 0.0f, 0.0f, 0.0f);
 
-    if (c_layerCount > 0) {
-        outputValue = sampleLayer(0, uv) * u_opacity[0];
-    }
+        if (c_layerCount > 0) {
+            outputValue = sampleLayer(0, uv) * u_opacity[0];
+        }
 
-    for (int i = 1; i < c_layerCount; i++) {
-        vec4 layerColor = sampleLayer(i, uv);
-        outputValue = BlendLayer( i, outputValue, layerColor, u_opacity[i] );
+        for (int i = 1; i < c_layerCount; i++) {
+            vec4 layerColor = sampleLayer(i, uv);
+            outputValue = BlendLayer( i, outputValue, layerColor, u_opacity[i] );
+        }
     }
 
     outputValue.rgb = encodeOutputColor(outputValue.rgb);

@@ -67,6 +67,8 @@ class SourceClosureTests(unittest.TestCase):
 			"gamescope:drm-commit-probe",
 			"gamescope:pipeline-compile-probe",
 			"gamescope:compositor-diagnostics",
+			"gamescope:mapped-image-origin",
+			"gamescope:staged-readback",
 			"gamescope:drm-format-selection",
 			"gamescope:stop-thread",
 			"gamescope:input-protocol-globals",

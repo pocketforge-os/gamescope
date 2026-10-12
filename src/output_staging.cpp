@@ -29,6 +29,7 @@ OutputPlan chooseOutputPlan( const PlanInput &input )
 		{
 			if ( vulkan.format == input.format &&
 				vulkan.modifier == kms.modifier &&
+				vulkan.modifier != LinearModifier &&
 				vulkan.combinedExportable &&
 				hasFeatures( vulkan.features, kCompositionFeatures ) )
 				return { OutputMode::Combined, kms.modifier, Rejection::Accepted };

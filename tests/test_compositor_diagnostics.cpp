@@ -23,4 +23,13 @@ int main()
 	assert( enabled() );
 	setenv( "GAMESCOPE_COMPOSITOR_DIAGNOSTICS", "0", 1 );
 	assert( !enabled() );
+
+	unsetenv( "GAMESCOPE_COMPOSITOR_CONSTANT_RED" );
+	assert( !constant_red_enabled() );
+	setenv( "GAMESCOPE_COMPOSITOR_CONSTANT_RED", "1", 1 );
+	assert( constant_red_enabled() );
+	assert( with_constant_red_debug( 0u ) == ConstantRedDebugBit );
+	assert( with_constant_red_debug( 0xa5u ) == ( 0xa5u | ConstantRedDebugBit ) );
+	setenv( "GAMESCOPE_COMPOSITOR_CONSTANT_RED", "0", 1 );
+	assert( !constant_red_enabled() );
 }

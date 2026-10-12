@@ -21,10 +21,12 @@ same-size statements below only while that transform is active.
 
 Output allocation selects one mode per output format:
 
-1. **Combined** keeps the existing path. Each ring image is exportable and
-   flippable, and its selected DRM modifier supports `SAMPLED_IMAGE`,
-   `STORAGE_IMAGE`, and `TRANSFER_SRC`. The compute compositor writes that image
-   directly.
+1. **Combined** keeps the existing path for non-linear DRM modifiers. Each ring
+   image is exportable and flippable, and its selected DRM modifier supports
+   `SAMPLED_IMAGE`, `STORAGE_IMAGE`, and `TRANSFER_SRC`. The compute compositor
+   writes that image directly.
+   `DRM_FORMAT_MOD_LINEAR` is deliberately excluded even if a driver advertises
+   storage-image support for it, so compute never writes a linear scanout image.
 2. **Staged** owns two same-sized, same-format rings. The composition ring uses
    optimal tiling and `SAMPLED | STORAGE | TRANSFER_SRC`. The scanout ring uses
    the explicit `DRM_FORMAT_MOD_LINEAR` modifier and
@@ -140,13 +142,35 @@ increment `composition_dispatches`. Direct scanout increments neither counter.
 A composited staged frame therefore advances both counters by one; a composited
 combined frame advances only `composition_dispatches`.
 
+For device-side fault localization, setting
+`GAMESCOPE_STAGED_READBACK_DIAGNOSTICS=1` adds transfer-only, host-mappable
+diagnostic images. On frame 1 and every 60th frame through frame 600, the same
+command buffer copies the optimal staging source before the production copy,
+then copies the linear export image after the production copy. Gamescope waits
+for that diagnostic submission and logs pixel count, exact-red count,
+exact-black count, and FNV-1a hash for both images with one frame/ring identity.
+The diagnostic images are neither exportable nor storage targets. Allocation
+failure disables that sample without changing the production staging copy.
+The environment variable is off by default and is intended only for bounded
+debug runs because each sampled frame adds a synchronous wait and two full-frame
+copies.
+
+`GAMESCOPE_COMPOSITOR_CONSTANT_RED=1` is a separate bring-up diagnostic. For
+the ordinary BLIT compute pipeline, it specializes the shader so every
+invocation writes opaque red to the normal composition target without taking
+any client-texture sampling branch. The dispatch, storage-image `imageStore`,
+rotation, staged copy, export, and KMS paths remain unchanged. Gamescope logs
+`CONSTANT_COMPOSITE state=enabled` when that specialized path is selected.
+The variable is unset by default and does not change normal composition.
+
 ## Errors and fallback policy
 
 Capability probing is deterministic and side-effect free. Allocation attempts
-combined mode first, then staged mode only when its complete eligibility check
-passes. A rejected modifier, unsupported usage, export failure, framebuffer
-import failure, format mismatch, or partial ring allocation failure tears down
-the incomplete candidate and reports one precise error.
+combined mode first for non-linear modifiers, then staged mode only when its
+complete eligibility check passes. A rejected modifier, unsupported usage,
+export failure, framebuffer import failure, format mismatch, or partial ring
+allocation failure tears down the incomplete candidate and reports one precise
+error.
 
 There is no per-frame fallback from a failed copy to stale output, CPU copy, or
 an unverified modifier. If neither combined nor staged allocation can construct
@@ -160,11 +184,14 @@ Deterministic unit tests exercise a Vulkan-independent planner and state model:
 
 - exact format and modifier intersection, including wrong-plane, wrong-format,
   missing-linear, and missing-usage rejection;
-- combined preference and staged eligibility;
+- tiled-combined preference, forced staging for linear scanout, and staged
+  eligibility;
 - resource-pair/ring invariants and no index advance after failure;
 - barrier/ownership order and first-use discard versus reuse acquisition;
 - counter behavior for direct, combined, staged, and failed frames;
 - explicit-output, screenshot, and PipeWire source selection.
+- readback pixel ordering, row-pitch handling, hashing, sampling bounds, and
+  opt-in environment parsing.
 
 An optional software-Vulkan integration test may validate same-format
 optimal-to-linear transfer and pixels under lavapipe when the runner exposes the
