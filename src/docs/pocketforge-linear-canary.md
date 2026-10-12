@@ -156,17 +156,26 @@ used the new default, call
 back the repository and effective rules. If the new default has been used,
 stop and design a forward repair instead of hiding history by switching back.
 
-Remove only the now-duplicate local `pull_request` rule by patching
-`linear_ruleset_id`. Preserve active enforcement, no bypass actors, the exact
-branch condition, deletion, non-fast-forward, strict required status checks,
-and required linear history.
+Remove only the now-duplicate local `pull_request` rule by replacing the full
+ruleset through the update endpoint:
+
+```sh
+gh api -X PUT "repos/$owner/$repo/rulesets/$linear_ruleset_id" --input -
+```
+
+The input must preserve active enforcement, no bypass actors, the exact branch
+condition, deletion, non-fast-forward, strict required status checks, and
+required linear history. Repository ruleset updates use `PUT`; `PATCH` returns
+HTTP 404 and must not be interpreted as proof that the ruleset is absent.
 
 Read-back: the full ruleset JSON must contain exactly those four rule types;
 effective rules must still contain `pull_request` from organization ruleset
 18506023. Confirm strict=true and both check contexts again.
 
-Rollback: patch `linear_ruleset_id` with the complete temporary JSON from step
-2, then read back both the full and effective rules.
+Rollback: restore `linear_ruleset_id` with the complete temporary JSON from
+step 2 using
+`gh api -X PUT "repos/$owner/$repo/rulesets/$linear_ruleset_id" --input -`,
+then read back both the full and effective rules.
 
 Create a second repository ruleset:
 
