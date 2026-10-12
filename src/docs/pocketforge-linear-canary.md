@@ -48,10 +48,13 @@ This document and `.github/workflows/main.yml` land together through a pull
 request based on `pocketforge-linear`. Both `push` and `pull_request` filters
 must name `pocketforge` and `pocketforge-linear` before the default changes.
 
-Before merging that pull request, create a temporary repository ruleset. The
-organization pull-request rule targets `~DEFAULT_BRANCH`, so it does not yet
-protect `pocketforge-linear`; the temporary local `pull_request` rule closes
-that interval.
+The canary's temporary repository ruleset already exists as ID `24909558`.
+Set `linear_ruleset_id=24909558`, fetch that exact ID, and compare its complete
+semantics with the JSON below before any later operation. Also enumerate the
+applicable rulesets and refuse if another repository ruleset targets
+`refs/heads/pocketforge-linear`. The organization pull-request rule targets
+`~DEFAULT_BRANCH`, so the temporary local `pull_request` rule closes the
+pre-switch interval.
 
 ```json
 {
@@ -85,8 +88,11 @@ that interval.
 }
 ```
 
-Apply with `POST /repos/pocketforge-os/gamescope/rulesets`. Record the returned
-ruleset ID as `linear_ruleset_id`.
+Only if `GET /repos/pocketforge-os/gamescope/rulesets/24909558` returns 404 and
+the applicable inventory proves that no semantically matching ruleset exists,
+stop for owner action to `POST /repos/pocketforge-os/gamescope/rulesets` with
+the exact JSON above. Bind `linear_ruleset_id` to the returned ID and perform
+the same semantic read-back before continuing. Never POST when 24909558 exists.
 
 Read-back: `GET /repos/pocketforge-os/gamescope/rulesets/$linear_ruleset_id`
 must exactly show active enforcement, no bypass actor, the one branch include,

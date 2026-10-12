@@ -32,6 +32,32 @@ def job_block(workflow, job):
     return "".join(lines[start:end])
 
 
+def trigger_event_block(workflow, event):
+    lines = workflow.splitlines(keepends=True)
+    try:
+        on_start = lines.index("on:\n")
+    except ValueError as exc:
+        raise ValueError("workflow_triggers_missing") from exc
+    on_end = len(lines)
+    for index in range(on_start + 1, len(lines)):
+        if lines[index].strip() and not lines[index].startswith(" "):
+            on_end = index
+            break
+
+    marker = f"  {event}:\n"
+    try:
+        start = lines.index(marker, on_start + 1, on_end)
+    except ValueError as exc:
+        raise ValueError(f"workflow_trigger_missing event={event}") from exc
+    end = on_end
+    for index in range(start + 1, on_end):
+        line = lines[index]
+        if line.startswith("  ") and not line.startswith("    "):
+            end = index
+            break
+    return "".join(lines[start:end])
+
+
 def require(block, needle, reason):
     if needle not in block:
         raise ValueError(reason)
@@ -60,12 +86,15 @@ def continued_meson_setups(step):
 
 
 def verify_workflow(workflow):
-    branch_filter = "    branches: [pocketforge, pocketforge-linear]"
-    if workflow.count(branch_filter) != 2:
-        raise ValueError(
-            "linear_default_branch_filters_missing "
-            f"expected=2 actual={workflow.count(branch_filter)}"
-        )
+    expected_branches = "    branches: [pocketforge, pocketforge-linear]\n"
+    for event in ("push", "pull_request"):
+        trigger = trigger_event_block(workflow, event)
+        branches = [line for line in trigger.splitlines(keepends=True) if line.startswith("    branches:")]
+        if branches != [expected_branches]:
+            raise ValueError(
+                "linear_default_branch_filter_invalid "
+                f"event={event} actual={branches!r}"
+            )
 
     if "permissions:\n  contents: read\n" not in workflow:
         raise ValueError("workflow_contents_permission_not_read_only")
@@ -193,6 +222,18 @@ def verify(root):
         "runtime_context_in_job_definition": workflow.replace(
             "${{ github.workspace }}",
             "${{ runner.temp }}",
+            1,
+        ),
+        "push_branch_filter_drift": workflow.replace(
+            "  push:\n    branches: [pocketforge, pocketforge-linear]\n",
+            "  push:\n    branches: [pocketforge]\n"
+            "#    branches: [pocketforge, pocketforge-linear]\n",
+            1,
+        ),
+        "pull_request_branch_filter_drift": workflow.replace(
+            "  pull_request:\n    branches: [pocketforge, pocketforge-linear]\n",
+            "  pull_request:\n    branches: [pocketforge]\n"
+            "#    branches: [pocketforge, pocketforge-linear]\n",
             1,
         ),
     }
