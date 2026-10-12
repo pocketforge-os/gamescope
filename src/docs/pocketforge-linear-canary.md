@@ -35,8 +35,10 @@ test ! -e "$before"
 ```
 
 Read-back: check that the file is non-empty, names the current default branch,
-contains full JSON for every ID in the repository and organization ruleset
-lists, and records the protection response for both named branches.
+contains full JSON for every ID returned by the repository ruleset endpoint
+with `includes_parents=true`, and records the protection response for both
+named branches. That inventory includes each applicable parent organization
+ruleset; a global organization-ruleset listing is neither needed nor used.
 
 Rollback: none. This step is read-only and the receipt is immutable.
 
@@ -115,8 +117,10 @@ Only use that rollback before switching the default branch.
 
 ## 3. Switch the default and finalize rules
 
-Immediately before mutation, re-read the repository, organization ruleset
-18506023 (`pf-require-pr`), both repository rulesets, and effective rules for
+Immediately before mutation, re-read the repository, applicable rulesets with
+`GET /repos/pocketforge-os/gamescope/rulesets?includes_parents=true`, full
+ruleset 18506023 (`pf-require-pr`) through the repository-scoped ruleset
+endpoint, both repository rulesets, and effective rules for
 `pocketforge-linear`. Refuse unless:
 
 - the workflow on `pocketforge-linear` targets both branch names;
