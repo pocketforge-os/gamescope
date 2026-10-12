@@ -99,12 +99,16 @@ Rollback: before the default switch, close the bootstrap PR and call
 the ruleset list and verify that the ID is absent. Delete only the bootstrap
 feature branch, never either long-lived branch.
 
-The old base-side filter cannot start checks for the bootstrap PR. Dispatch
-`.github/workflows/main.yml` at the exact feature head, record the run ID, head
-SHA, job durations, and log evidence that `native-tests` and `aarch64-build`
-really executed. After exact-head author review, merge the bootstrap PR with
-the deployed `pf-pr-merge.sh`. It must use the required-linear-history rebase
-path and prove ordered patch IDs and final-tree equality.
+Opening the canary PR started pull-request run 38207861417 from the proposed
+workflow at exact head `cf8c5f6218f29fe21d25d5a61a5a774123140fc7`.
+`pf-public-isolation-probe`, `native-tests`, and `aarch64-build` all executed and
+passed; the two required jobs ran for 3m37s and 4m23s respectively. Therefore a
+manual dispatch was not needed. Before requesting any fallback dispatch, first
+read the PR check suite and workflow runs for the exact head; never duplicate a
+real pull-request run. Record the run ID, event, head SHA, job durations, and
+log evidence. After exact-head author review, merge the bootstrap PR with the
+deployed `pf-pr-merge.sh`. It must use the required-linear-history rebase path
+and prove ordered patch IDs and final-tree equality.
 
 Read-back: verify the PR reports `MERGED`, its merge commit is the returned
 rebased head, both workflow filters are present on `pocketforge-linear`,
