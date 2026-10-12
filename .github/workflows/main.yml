@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [pocketforge]
+    branches: [pocketforge, pocketforge-linear]
   pull_request:
-    branches: [pocketforge]
+    branches: [pocketforge, pocketforge-linear]
   workflow_dispatch:
 
 permissions:
