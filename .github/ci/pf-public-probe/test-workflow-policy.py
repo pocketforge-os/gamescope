@@ -71,6 +71,14 @@ def step_blocks(job):
         yield "".join(lines[start:end])
 
 
+def named_step(job, name):
+    marker = f"      - name: {name}\n"
+    for step in step_blocks(job):
+        if step.startswith(marker):
+            return step
+    raise ValueError(f"missing_step name={name}")
+
+
 def continued_meson_setups(step):
     command = []
     for line in step.splitlines():
@@ -180,6 +188,12 @@ def verify_workflow(workflow):
             raise ValueError(f"legacy_source_path_present value={value}")
 
     native = job_block(workflow, "native-tests")
+    native_environment = named_step(native, "Prepare build environment")
+    require(
+        native_environment,
+        "vulkan-swrast",
+        "native_vulkan_software_icd_missing",
+    )
     for value in (
         "an incomplete offline cache was accepted",
         "a corrupted offline cache was accepted",
@@ -187,6 +201,14 @@ def verify_workflow(workflow):
         "ERROR: Automatic wrap-based subproject downloading is disabled",
     ):
         require(native, value, f"source_negative_control_missing value={value}")
+
+    aarch64 = job_block(workflow, "aarch64-build")
+    aarch64_environment = named_step(aarch64, "Prepare aarch64 cross environment")
+    require(
+        aarch64_environment,
+        "libjson-c-dev:arm64",
+        "aarch64_json_c_development_package_missing",
+    )
 
     print(
         "pf_public_workflow_policy_status=ok jobs=3 fork_guards=3 "
@@ -234,6 +256,16 @@ def verify(root):
             "  pull_request:\n    branches: [pocketforge, pocketforge-linear]\n",
             "  pull_request:\n    branches: [pocketforge]\n"
             "#    branches: [pocketforge, pocketforge-linear]\n",
+            1,
+        ),
+        "native_vulkan_software_icd_omitted": workflow.replace(
+            " vulkan-icd-loader vulkan-swrast \\\n",
+            " vulkan-icd-loader \\\n",
+            1,
+        ),
+        "aarch64_json_c_development_package_omitted": workflow.replace(
+            " libvulkan-dev:arm64 libjson-c-dev:arm64\n",
+            " libvulkan-dev:arm64\n",
             1,
         ),
     }
