@@ -66,6 +66,23 @@ test_runtime_orientation = executable(
 )
 test('runtime-orientation', test_runtime_orientation)
 
+test_xwayland_orientation = executable(
+	'test_xwayland_orientation',
+	[
+		srcdir / 'output_rotation.cpp',
+		srcdir / 'runtime_orientation.cpp',
+		'test_xwayland_orientation.cpp',
+	],
+	include_directories: [srcdir],
+	dependencies: [dep_wayland, dep_x11, dep_xrandr, json_c_dep, thread_dep],
+)
+test(
+	'xwayland-orientation',
+	test_xwayland_orientation,
+	args: [gamescope_exe, gamescope_reaper_exe],
+	timeout: 30,
+)
+
 test_privileged_wayland = executable(
 	'test_privileged_wayland',
 	[

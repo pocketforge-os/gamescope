@@ -317,6 +317,8 @@ DirectScanoutDecision directScanoutDecision( const DirectScanoutInput &input )
 			return reject( DirectScanoutRejection::NonNativeExtent );
 		if ( layer.contentExtent != layer.bufferExtent )
 			return reject( DirectScanoutRejection::ContentExtentMismatch );
+		if ( layer.client.orientationGeneration != input.orientationGeneration )
+			return reject( DirectScanoutRejection::StaleOrientationGeneration );
 
 		switch ( proveClientTransform( layer.client, input.outputTransform ) )
 		{

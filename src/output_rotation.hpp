@@ -103,6 +103,7 @@ enum class DirectScanoutRejection
 	ContentExtentMismatch,
 	ClientTransformNotProven,
 	AmbiguousClientTransform,
+	StaleOrientationGeneration,
 	KmsTransformNotNormal,
 	IncompatibleFormat,
 	AmbiguousModifier,
@@ -139,6 +140,7 @@ struct ClientTransformMetadata
 	ClientClass clientClass = ClientClass::Unknown;
 	ClientTransform waylandBufferTransform = ClientTransform::Unknown;
 	ClientTransform vulkanPreTransform = ClientTransform::Unknown;
+	uint64_t orientationGeneration = 0;
 };
 
 enum class LayerRole
@@ -198,6 +200,7 @@ struct DirectScanoutInput
 	Extent logicalExtent = {};
 	uint32_t layerCount = 0;
 	bool normalKmsTransform = false;
+	uint64_t orientationGeneration = 0;
 	std::array<DirectScanoutLayerInput, MaxNativeDirectLayers> layers = {};
 };
 

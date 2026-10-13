@@ -191,6 +191,7 @@ struct wlserver_t {
 	struct wl_listener new_layer_shell_surface;
 	struct wl_listener new_pointer_constraint;
 	std::vector<std::shared_ptr<steamcompmgr_win_t>> xdg_wins;
+	std::set<struct wlr_surface *> surfaces;
 	std::atomic<bool> xdg_dirty;
 	std::mutex xdg_commit_lock;
 	std::vector<ResListEntry_t> xdg_commit_queue;
@@ -288,6 +289,7 @@ void wlserver_x11_surface_info_init( struct wlserver_x11_surface_info *surf, gam
 void wlserver_x11_surface_info_finish( struct wlserver_x11_surface_info *surf );
 
 void wlserver_set_xwayland_server_mode( size_t idx, int w, int h, int refresh );
+uint64_t wlserver_orientation_generation();
 
 extern std::atomic<bool> g_bPendingTouchMovement;
 

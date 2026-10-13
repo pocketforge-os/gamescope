@@ -381,6 +381,11 @@ void test_client_transform_proof()
 		expectRejected( input, DirectScanoutRejection::NonNativeExtent );
 
 		input = eligibleDirectInput( transform );
+		input.orientationGeneration = 2;
+		input.layers[0].client.orientationGeneration = 1;
+		expectRejected( input, DirectScanoutRejection::StaleOrientationGeneration );
+
+		input = eligibleDirectInput( transform );
 		input.normalKmsTransform = false;
 		expectRejected( input, DirectScanoutRejection::KmsTransformNotNormal );
 	}
