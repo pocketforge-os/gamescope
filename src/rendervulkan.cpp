@@ -34,6 +34,7 @@
 #include "wlr_end.hpp"
 
 #include "rendervulkan.hpp"
+#include "vulkan_device_extensions.hpp"
 #include "vulkan_drm_node_policy.hpp"
 #include "vulkan_present_features.h"
 #include "main.hpp"
@@ -466,6 +467,7 @@ bool CVulkanDevice::createDevice()
 	bool supportsHDRMetadata = false;
 	bool supportsPresentIdExtension = false;
 	bool supportsPresentWaitExtension = false;
+	bool supportsExternalSemaphoreFdExtension = false;
 	for (const auto& ext : m_supportedExts) {
 		if ( strcmp(ext.extensionName, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME) == 0 )
 			m_bSupportsModifiers = true;
@@ -481,6 +483,9 @@ bool CVulkanDevice::createDevice()
 
 		if ( strcmp(ext.extensionName, VK_KHR_PRESENT_WAIT_EXTENSION_NAME) == 0 )
 			supportsPresentWaitExtension = true;
+
+		if ( strcmp(ext.extensionName, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME) == 0 )
+			supportsExternalSemaphoreFdExtension = true;
 	}
 
 	vk_log.infof( "physical device %s DRM format modifiers", m_bSupportsModifiers ? "supports" : "does not support" );
@@ -603,7 +608,15 @@ bool CVulkanDevice::createDevice()
 	enabledExtensions.push_back( VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME );
 	enabledExtensions.push_back( VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME );
 
-	enabledExtensions.push_back( VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME );
+	const gamescope::vulkan_device_extensions::ExternalSemaphoreFdSelection externalSemaphoreFdSelection =
+		gamescope::vulkan_device_extensions::selectExternalSemaphoreFd(
+			GetBackend()->SupportsOutputImageScanout(),
+			GetBackend()->SupportsExplicitSync(),
+			supportsExternalSemaphoreFdExtension );
+	if ( externalSemaphoreFdSelection != gamescope::vulkan_device_extensions::ExternalSemaphoreFdSelection::Disabled )
+		enabledExtensions.push_back( VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME );
+	m_bSupportsExternalSemaphoreFd =
+		externalSemaphoreFdSelection == gamescope::vulkan_device_extensions::ExternalSemaphoreFdSelection::Enabled;
 
 	enabledExtensions.push_back( VK_EXT_ROBUSTNESS_2_EXTENSION_NAME );
 #if 0

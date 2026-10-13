@@ -232,7 +232,11 @@ namespace gamescope
 
 		virtual bool SupportsExplicitSync() const override
 		{
-			return true;
+			// The linux-drm-syncobj protocol bridges timelines through
+			// VK_KHR_external_semaphore_fd. Keep it available when the Vulkan
+			// driver supports that bridge, but do not advertise an unusable
+			// protocol on software drivers such as lavapipe.
+			return g_device.supportsExternalSemaphoreFd();
 		}
 
 		virtual bool IsPaused() const override

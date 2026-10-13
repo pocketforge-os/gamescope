@@ -70,6 +70,7 @@ class SourceClosureTests(unittest.TestCase):
 			"gamescope:drm-format-selection",
 			"gamescope:stop-thread",
 			"gamescope:input-protocol-globals",
+			"gamescope:vulkan-device-extensions",
 		]
 		names = gamescope_names + ["libdisplay-info:pocketforge-source-locator"]
 		names.extend(f"libdisplay-info:fixture-{index}" for index in range(64))
@@ -92,7 +93,7 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		self.assertIn("registered_gamescope=14", positive.stdout)
+		self.assertIn("registered_gamescope=15", positive.stdout)
 		shrink_negative = subprocess.run(
 			[sys.executable, str(TEST_REGISTRATION)],
 			input=fixture.replace("gamescope:output-staging\n", ""),
@@ -128,6 +129,24 @@ class SourceClosureTests(unittest.TestCase):
 		self.assertIn(
 			"missing required registered test: gamescope:stop-thread",
 			stop_thread_negative.stderr,
+		)
+		vulkan_device_extensions_negative = subprocess.run(
+			[sys.executable, str(TEST_REGISTRATION)],
+			input=fixture.replace(
+				"gamescope:vulkan-device-extensions\n",
+				"gamescope:substituted-vulkan-device-extensions-test\n",
+			),
+			text=True,
+			capture_output=True,
+		)
+		self.assertNotEqual(
+			vulkan_device_extensions_negative.returncode,
+			0,
+			vulkan_device_extensions_negative.stdout,
+		)
+		self.assertIn(
+			"missing required registered test: gamescope:vulkan-device-extensions",
+			vulkan_device_extensions_negative.stderr,
 		)
 
 	def setUp(self) -> None:
