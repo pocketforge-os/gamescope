@@ -62,6 +62,7 @@ test_runtime_orientation = executable(
 		'test_runtime_orientation.cpp',
 	],
 	include_directories: [srcdir],
+	dependencies: [json_c_dep],
 )
 test('runtime-orientation', test_runtime_orientation)
 
