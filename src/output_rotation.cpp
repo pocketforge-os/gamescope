@@ -31,6 +31,8 @@ ClientTransform expectedClientTransform( Transform transform )
 	{
 		case Transform::Rotate90:
 			return ClientTransform::Rotate90;
+		case Transform::Rotate180:
+			return ClientTransform::Rotate180;
 		case Transform::Rotate270:
 			return ClientTransform::Rotate270;
 		default:
@@ -88,12 +90,19 @@ Extent transformExtent( Extent logicalExtent, Transform transform )
 	return logicalExtent;
 }
 
+Transform compose( Transform first, Transform next )
+{
+	return Transform( ( uint32_t( first ) + uint32_t( next ) ) % 4 );
+}
+
 Transform transformFromPanelOrientation( GamescopePanelOrientation orientation )
 {
 	switch ( orientation )
 	{
 		case GAMESCOPE_PANEL_ORIENTATION_90:
 			return Transform::Rotate90;
+		case GAMESCOPE_PANEL_ORIENTATION_180:
+			return Transform::Rotate180;
 		case GAMESCOPE_PANEL_ORIENTATION_270:
 			return Transform::Rotate270;
 		default:
@@ -143,6 +152,9 @@ std::optional<Point> logicalToNative( Point logical, Extent logicalExtent,
 			return logical;
 		case Transform::Rotate90:
 			return Point{ logicalExtent.height - 1 - logical.y, logical.x };
+		case Transform::Rotate180:
+			return Point{ logicalExtent.width - 1 - logical.x,
+				logicalExtent.height - 1 - logical.y };
 		case Transform::Rotate270:
 			return Point{ logical.y, logicalExtent.width - 1 - logical.x };
 	}
@@ -162,6 +174,9 @@ std::optional<Point> nativeToLogical( Point native, Extent logicalExtent,
 			return native;
 		case Transform::Rotate90:
 			return Point{ native.y, logicalExtent.height - 1 - native.x };
+		case Transform::Rotate180:
+			return Point{ logicalExtent.width - 1 - native.x,
+				logicalExtent.height - 1 - native.y };
 		case Transform::Rotate270:
 			return Point{ logicalExtent.width - 1 - native.y, native.x };
 	}
@@ -184,6 +199,13 @@ std::optional<Rect> logicalToNative( Rect logical, Extent logicalExtent,
 				logical.x,
 				logical.height,
 				logical.width,
+			};
+		case Transform::Rotate180:
+			return Rect{
+				logicalExtent.width - logical.x - logical.width,
+				logicalExtent.height - logical.y - logical.height,
+				logical.width,
+				logical.height,
 			};
 		case Transform::Rotate270:
 			return Rect{
@@ -213,6 +235,13 @@ std::optional<Rect> nativeToLogical( Rect native, Extent logicalExtent,
 				logicalExtent.height - native.x - native.width,
 				native.height,
 				native.width,
+			};
+		case Transform::Rotate180:
+			return Rect{
+				logicalExtent.width - native.x - native.width,
+				logicalExtent.height - native.y - native.height,
+				native.width,
+				native.height,
 			};
 		case Transform::Rotate270:
 			return Rect{
@@ -248,6 +277,7 @@ DirectScanoutDecision directScanoutDecision( const DirectScanoutInput &input )
 	};
 
 	if ( input.outputTransform != Transform::Rotate90 &&
+		input.outputTransform != Transform::Rotate180 &&
 		input.outputTransform != Transform::Rotate270 )
 		return reject( DirectScanoutRejection::NoSoftwareRotation );
 	if ( input.layerCount == 0 || input.layerCount > MaxNativeDirectLayers )

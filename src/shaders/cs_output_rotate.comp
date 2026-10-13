@@ -24,9 +24,14 @@ void main() {
 
     ivec2 logicalSize = textureSize(s_samplers[0], 0);
     ivec2 logicalCoord;
-    if (u_transform == 1) {
+    if (u_transform == 0) {
+        logicalCoord = ivec2(nativeCoord);
+    } else if (u_transform == 1) {
         // Rotate90 inverse: native (u,v) -> logical (v,H-1-u).
         logicalCoord = ivec2(nativeCoord.y, logicalSize.y - 1 - int(nativeCoord.x));
+    } else if (u_transform == 2) {
+        // Rotate180 inverse: native (u,v) -> logical (W-1-u,H-1-v).
+        logicalCoord = logicalSize - ivec2(nativeCoord) - ivec2(1);
     } else {
         // Rotate270 inverse: native (u,v) -> logical (W-1-v,u).
         logicalCoord = ivec2(logicalSize.x - 1 - int(nativeCoord.y), nativeCoord.x);

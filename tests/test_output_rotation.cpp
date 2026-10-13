@@ -179,8 +179,8 @@ void test_capture_and_scanout_contract()
 		CHECK( contract.compositionExtent == logical );
 		CHECK( contract.captureExtent == logical );
 		CHECK( contract.captureSpace == CaptureSpace::Logical );
-		CHECK( contract.rotatedExtent == Extent{ 720, 1280 } );
-		CHECK( contract.scanoutExtent == Extent{ 720, 1280 } );
+		CHECK( contract.rotatedExtent == transformExtent( logical, transform ) );
+		CHECK( contract.scanoutExtent == transformExtent( logical, transform ) );
 		CHECK( contract.kmsTransform == Transform::Normal );
 		CHECK( contract.rotateBeforeStaging );
 	}
@@ -193,9 +193,14 @@ void test_capture_and_scanout_contract()
 
 ClientTransform matchingClientTransform( Transform transform )
 {
-	return transform == Transform::Rotate90
-		? ClientTransform::Rotate90
-		: ClientTransform::Rotate270;
+	switch ( transform )
+	{
+		case Transform::Normal: return ClientTransform::Normal;
+		case Transform::Rotate90: return ClientTransform::Rotate90;
+		case Transform::Rotate180: return ClientTransform::Rotate180;
+		case Transform::Rotate270: return ClientTransform::Rotate270;
+	}
+	return ClientTransform::Unknown;
 }
 
 ClientTransform wrongClientTransform( Transform transform )
@@ -259,7 +264,8 @@ void expectRejected( const DirectScanoutInput &input, DirectScanoutRejection exp
 void test_native_base_and_system_overlay_plane_records()
 {
 	const Rect overlayLogical = { 900, 500, 200, 100 };
-	for ( Transform transform : { Transform::Rotate90, Transform::Rotate270 } )
+	for ( Transform transform : { Transform::Rotate90, Transform::Rotate180,
+		Transform::Rotate270 } )
 	{
 		DirectScanoutInput baseOnlyInput = eligibleDirectInput( transform );
 		const DirectScanoutDecision baseOnly = directScanoutDecision( baseOnlyInput );
@@ -267,8 +273,9 @@ void test_native_base_and_system_overlay_plane_records()
 		CHECK( baseOnly.rejection == DirectScanoutRejection::Accepted );
 		CHECK( baseOnly.recordCount == 1 );
 		CHECK( baseOnly.records[0].bufferIdentity == 0xBA5E );
-		CHECK( baseOnly.records[0].sourceRect == Rect{ 0, 0, 720, 1280 } );
-		CHECK( baseOnly.records[0].destinationRect == Rect{ 0, 0, 720, 1280 } );
+		const Extent native = transformExtent( { 1280, 720 }, transform );
+		CHECK( baseOnly.records[0].sourceRect == Rect{ 0, 0, native.width, native.height } );
+		CHECK( baseOnly.records[0].destinationRect == Rect{ 0, 0, native.width, native.height } );
 		CHECK( baseOnly.records[0].kmsTransform == Transform::Normal );
 
 		DirectScanoutInput withOverlayInput = baseOnlyInput;
@@ -280,7 +287,9 @@ void test_native_base_and_system_overlay_plane_records()
 		CHECK( withOverlay.recordCount == 2 );
 		CHECK( withOverlay.records[0] == baseOnly.records[0] );
 		CHECK( withOverlay.records[1].bufferIdentity == 0x0A11 );
-		CHECK( withOverlay.records[1].sourceRect == Rect{ 0, 0, 100, 200 } );
+		const Extent nativeOverlay = transformExtent( { 200, 100 }, transform );
+		CHECK( withOverlay.records[1].sourceRect ==
+			Rect{ 0, 0, nativeOverlay.width, nativeOverlay.height } );
 		CHECK( withOverlay.records[1].destinationRect ==
 			logicalToNative( overlayLogical, Extent{ 1280, 720 }, transform ) );
 		CHECK( withOverlay.records[1].kmsTransform == Transform::Normal );
@@ -299,12 +308,18 @@ void test_native_base_and_system_overlay_plane_records()
 			0x39, 0xE5, 0xA1, 0x4A, 0xF6, 0xB2,
 			0x5B, 0x17, 0xC3, 0x6C, 0x28, 0xD4,
 		};
+		const std::array<uint32_t, 12> expected180 = {
+			0x6C, 0x5B, 0x4A, 0x39, 0x28, 0x17,
+			0xF6, 0xE5, 0xD4, 0xC3, 0xB2, 0xA1,
+		};
 		const std::array<uint32_t, 12> expected270 = {
 			0xD4, 0x28, 0x6C, 0xC3, 0x17, 0x5B,
 			0xB2, 0xF6, 0x4A, 0xA1, 0xE5, 0x39,
 		};
 		if ( transform == Transform::Rotate90 )
 			CHECK_IMAGE( transformImage( overlayPixels, Extent{ 4, 3 }, transform ), expected90 );
+		else if ( transform == Transform::Rotate180 )
+			CHECK_IMAGE( transformImage( overlayPixels, Extent{ 4, 3 }, transform ), expected180 );
 		else
 			CHECK_IMAGE( transformImage( overlayPixels, Extent{ 4, 3 }, transform ), expected270 );
 	}
@@ -312,7 +327,8 @@ void test_native_base_and_system_overlay_plane_records()
 
 void test_client_transform_proof()
 {
-	for ( Transform transform : { Transform::Rotate90, Transform::Rotate270 } )
+	for ( Transform transform : { Transform::Rotate90, Transform::Rotate180,
+		Transform::Rotate270 } )
 	{
 		DirectScanoutInput input = eligibleDirectInput( transform );
 		CHECK( directScanoutDecision( input ).eligible );
@@ -359,8 +375,8 @@ void test_client_transform_proof()
 		expectRejected( input, DirectScanoutRejection::ClientTransformNotProven );
 
 		input = eligibleDirectInput( transform );
-		input.layers[0].bufferExtent = { 1280, 720 };
-		input.layers[0].contentExtent = { 1280, 720 };
+		input.layers[0].bufferExtent = { 1279, 720 };
+		input.layers[0].contentExtent = { 1279, 720 };
 		input.layers[0].client.waylandBufferTransform = ClientTransform::Normal;
 		expectRejected( input, DirectScanoutRejection::NonNativeExtent );
 
