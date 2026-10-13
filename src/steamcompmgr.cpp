@@ -7538,6 +7538,8 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 	}
 
 	gpuvis_trace_printf( "resolving fence for commit %lu win %lx", newCommit->commitID, w->type == steamcompmgr_win_type_t::XWAYLAND ? w->xwayland().id : 0 );
+	const bool nudgeAfterEnqueue = gamescope::commit_fence::requiresPostEnqueueNudge(
+		commitFence.action );
 	{
 		switch ( commitFence.action )
 		{
@@ -7560,6 +7562,8 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 	}
 
 	w->commit_queue.push_back( std::move(newCommit) );
+	if ( nudgeAfterEnqueue )
+		nudge_steamcompmgr();
 }
 
 void check_new_xwayland_res(xwayland_ctx_t *ctx)
