@@ -142,3 +142,10 @@ test_vulkan_device_extensions = executable(
 	include_directories: [srcdir],
 )
 test('vulkan-device-extensions', test_vulkan_device_extensions)
+
+test_commit_fence = executable(
+	'test_commit_fence',
+	'test_commit_fence.cpp',
+	include_directories: [srcdir],
+)
+test('commit-fence', test_commit_fence)

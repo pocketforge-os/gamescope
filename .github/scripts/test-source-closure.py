@@ -71,6 +71,7 @@ class SourceClosureTests(unittest.TestCase):
 			"gamescope:stop-thread",
 			"gamescope:input-protocol-globals",
 			"gamescope:vulkan-device-extensions",
+			"gamescope:commit-fence",
 		]
 		names = gamescope_names + ["libdisplay-info:pocketforge-source-locator"]
 		names.extend(f"libdisplay-info:fixture-{index}" for index in range(64))
@@ -93,7 +94,7 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		self.assertIn("registered_gamescope=15", positive.stdout)
+		self.assertIn("registered_gamescope=16", positive.stdout)
 		shrink_negative = subprocess.run(
 			[sys.executable, str(TEST_REGISTRATION)],
 			input=fixture.replace("gamescope:output-staging\n", ""),
@@ -147,6 +148,24 @@ class SourceClosureTests(unittest.TestCase):
 		self.assertIn(
 			"missing required registered test: gamescope:vulkan-device-extensions",
 			vulkan_device_extensions_negative.stderr,
+		)
+		commit_fence_negative = subprocess.run(
+			[sys.executable, str(TEST_REGISTRATION)],
+			input=fixture.replace(
+				"gamescope:commit-fence\n",
+				"gamescope:substituted-commit-fence-test\n",
+			),
+			text=True,
+			capture_output=True,
+		)
+		self.assertNotEqual(
+			commit_fence_negative.returncode,
+			0,
+			commit_fence_negative.stdout,
+		)
+		self.assertIn(
+			"missing required registered test: gamescope:commit-fence",
+			commit_fence_negative.stderr,
 		)
 
 	def setUp(self) -> None:

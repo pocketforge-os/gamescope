@@ -17,6 +17,7 @@
 
 #include "gamescope_shared.h"
 #include "backend.h"
+#include "commit_fence.hpp"
 #include "output_rotation.hpp"
 #include "output_staging.hpp"
 #include "pipeline_compile_probe.hpp"
@@ -204,7 +205,7 @@ public:
 		return format() == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
 	}
 
-	int memoryFence();
+	gamescope::commit_fence::Result memoryFence();
 
 	CVulkanTexture( void );
 	~CVulkanTexture( void );

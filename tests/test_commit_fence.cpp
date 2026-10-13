@@ -45,6 +45,7 @@ int main()
 	CHECK( epollFd >= 0 );
 	epoll_event registration = {
 		.events = EPOLLIN,
+		.data = {},
 	};
 	CHECK( epoll_ctl( epollFd, EPOLL_CTL_ADD, fence.fd, &registration ) == 0 );
 
