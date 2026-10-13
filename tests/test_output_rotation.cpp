@@ -63,7 +63,7 @@ void test_asymmetric_pixels_and_inverse_mappings()
 	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_90 ) == Transform::Rotate90 );
 	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_270 ) == Transform::Rotate270 );
 	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_0 ) == Transform::Normal );
-	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_180 ) == Transform::Normal );
+	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_180 ) == Transform::Rotate180 );
 
 	// Logical 4x3 image. Every edge, row, and column is distinguishable.
 	const std::array<uint32_t, 12> source = {
@@ -83,16 +83,24 @@ void test_asymmetric_pixels_and_inverse_mappings()
 		0xB2, 0xF6, 0x4A,
 		0xA1, 0xE5, 0x39,
 	};
+	const std::array<uint32_t, 12> expected180 = {
+		0x6C, 0x5B, 0x4A, 0x39,
+		0x28, 0x17, 0xF6, 0xE5,
+		0xD4, 0xC3, 0xB2, 0xA1,
+	};
 
 	const Extent logical = { 4, 3 };
 	CHECK( transformExtent( logical, Transform::Rotate90 ) == Extent{ 3, 4 } );
+	CHECK( transformExtent( logical, Transform::Rotate180 ) == logical );
 	CHECK( transformExtent( logical, Transform::Rotate270 ) == Extent{ 3, 4 } );
 	CHECK_IMAGE( transformImage( source, logical, Transform::Rotate90 ), expected90 );
+	CHECK_IMAGE( transformImage( source, logical, Transform::Rotate180 ), expected180 );
 	CHECK_IMAGE( transformImage( source, logical, Transform::Rotate270 ), expected270 );
 	CHECK( transformImage( source, logical, Transform::Rotate90 ) !=
 		transformImage( source, logical, Transform::Rotate270 ) );
 
-	for ( Transform transform : { Transform::Rotate90, Transform::Rotate270 } )
+	for ( Transform transform : { Transform::Normal, Transform::Rotate90,
+		Transform::Rotate180, Transform::Rotate270 } )
 	{
 		for ( uint32_t y = 0; y < logical.height; y++ )
 		{
@@ -136,9 +144,13 @@ void test_layout_stride_damage_cursor_and_overlay_coordinates()
 	const Rect damage = { 100, 50, 300, 200 };
 	CHECK( logicalToNative( damage, logical, Transform::Rotate90 ) ==
 		Rect{ 470, 100, 200, 300 } );
+	CHECK( logicalToNative( damage, logical, Transform::Rotate180 ) ==
+		Rect{ 880, 470, 300, 200 } );
 	CHECK( logicalToNative( damage, logical, Transform::Rotate270 ) ==
 		Rect{ 50, 880, 200, 300 } );
 	CHECK( nativeToLogical( Rect{ 470, 100, 200, 300 }, logical, Transform::Rotate90 ) ==
+		damage );
+	CHECK( nativeToLogical( Rect{ 880, 470, 300, 200 }, logical, Transform::Rotate180 ) ==
 		damage );
 	CHECK( nativeToLogical( Rect{ 50, 880, 200, 300 }, logical, Transform::Rotate270 ) ==
 		damage );
@@ -147,6 +159,7 @@ void test_layout_stride_damage_cursor_and_overlay_coordinates()
 
 	const Point cursor = { 123, 45 };
 	CHECK( logicalToNative( cursor, logical, Transform::Rotate90 ) == Point{ 674, 123 } );
+	CHECK( logicalToNative( cursor, logical, Transform::Rotate180 ) == Point{ 1156, 674 } );
 	CHECK( logicalToNative( cursor, logical, Transform::Rotate270 ) == Point{ 45, 1156 } );
 
 	const Rect externalOverlay = { 900, 500, 200, 100 };
@@ -159,7 +172,8 @@ void test_layout_stride_damage_cursor_and_overlay_coordinates()
 void test_capture_and_scanout_contract()
 {
 	const Extent logical = { 1280, 720 };
-	for ( Transform transform : { Transform::Rotate90, Transform::Rotate270 } )
+	for ( Transform transform : { Transform::Rotate90, Transform::Rotate180,
+		Transform::Rotate270 } )
 	{
 		const FrameContract contract = frameContract( logical, transform );
 		CHECK( contract.compositionExtent == logical );

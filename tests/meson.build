@@ -54,6 +54,17 @@ test_output_rotation = executable(
 )
 test('output-rotation', test_output_rotation)
 
+test_runtime_orientation = executable(
+	'test_runtime_orientation',
+	[
+		srcdir / 'output_rotation.cpp',
+		srcdir / 'runtime_orientation.cpp',
+		'test_runtime_orientation.cpp',
+	],
+	include_directories: [srcdir],
+)
+test('runtime-orientation', test_runtime_orientation)
+
 test_privileged_wayland = executable(
 	'test_privileged_wayland',
 	[
