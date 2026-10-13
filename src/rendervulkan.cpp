@@ -2982,8 +2982,13 @@ CVulkanTexture::~CVulkanTexture( void )
 	m_bInitialized = false;
 }
 
-int CVulkanTexture::memoryFence()
+gamescope::commit_fence::Result CVulkanTexture::memoryFence()
 {
+	// Internal client textures have no implicit-sync fd to export. Their upload
+	// path waits for Vulkan completion before returning, so they are ready now.
+	if ( !m_bExternal )
+		return gamescope::commit_fence::alreadyReady();
+
 	const VkMemoryGetFdInfoKHR memory_get_fd_info = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
 		.memory = m_vkImageMemory,
@@ -2992,10 +2997,11 @@ int CVulkanTexture::memoryFence()
 	int fence = -1;
 	VkResult res = g_device.vk.GetMemoryFdKHR(g_device.device(), &memory_get_fd_info, &fence);
 	if ( res != VK_SUCCESS ) {
-		fprintf( stderr, "vkGetMemoryFdKHR failed\n" );
+		vk_errorf( res, "vkGetMemoryFdKHR failed" );
+		return gamescope::commit_fence::error( int( res ) );
 	}
 
-	return fence;
+	return gamescope::commit_fence::waitForFd( fence );
 }
 
 static bool is_image_format_modifier_supported(VkFormat format, uint32_t drmFormat, uint64_t modifier)

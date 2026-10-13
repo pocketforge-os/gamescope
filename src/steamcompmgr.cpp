@@ -7410,7 +7410,7 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 		return;
 	}
 
-	int fence = -1;
+	gamescope::commit_fence::Result commitFence = gamescope::commit_fence::error( EINVAL );
 	global_focus_t *pCurrentFocus = GetCurrentFocus();
 
 	static bool bMangoappSocketDisable = env_to_bool( getenv( "GAMESCOPE_MANGOAPP_SOCKET_DISABLE" ));
@@ -7422,8 +7422,6 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 
 	bool bValidPreemptiveScale = reslistentry.pAcquirePoint && pCurrentFocus && w == pCurrentFocus->focusWindow && cv_upscale_preemptive;
 	bool bPreemptiveUpscale = bValidPreemptiveScale && newCommit->ShouldPreemptivelyUpscale();
-
-	bool bKnownReady = false;
 
 	std::pair<int32_t, bool> eventFd = gamescope::CAcquireTimelinePoint::k_InvalidEvent;
 
@@ -7519,29 +7517,46 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 
 	if ( eventFd != gamescope::CAcquireTimelinePoint::k_InvalidEvent )
 	{
-		fence = eventFd.first;
-		bKnownReady = eventFd.second;
+		commitFence = eventFd.second
+			? gamescope::commit_fence::alreadyReady()
+			: gamescope::commit_fence::waitForFd( eventFd.first );
 	}
 	else
 	{
 		struct wlr_dmabuf_attributes dmabuf = {0};
 		if ( wlr_buffer_get_dmabuf( buf, &dmabuf ) )
 		{
-			fence = dup( dmabuf.fd[0] );
+			const int fence = dup( dmabuf.fd[0] );
+			commitFence = fence >= 0
+				? gamescope::commit_fence::waitForFd( fence )
+				: gamescope::commit_fence::error( errno );
 		}
 		else
 		{
-			fence = newCommit->vulkanTex->memoryFence();
+			commitFence = newCommit->vulkanTex->memoryFence();
 		}
 	}
 
-	gpuvis_trace_printf( "pushing wait for commit %lu win %lx", newCommit->commitID, w->type == steamcompmgr_win_type_t::XWAYLAND ? w->xwayland().id : 0 );
+	gpuvis_trace_printf( "resolving fence for commit %lu win %lx", newCommit->commitID, w->type == steamcompmgr_win_type_t::XWAYLAND ? w->xwayland().id : 0 );
 	{
-		newCommit->SetFence( fence, mango_nudge, doneCommits );
-		if ( bKnownReady )
-			newCommit->Signal();
-		else
-			g_ImageWaiter.AddWaitable( newCommit.get() );
+		switch ( commitFence.action )
+		{
+			case gamescope::commit_fence::Action::Ready:
+				newCommit->SetFence( -1, mango_nudge, doneCommits );
+				newCommit->Signal();
+				break;
+			case gamescope::commit_fence::Action::Wait:
+				newCommit->SetFence( commitFence.fd, mango_nudge, doneCommits );
+				if ( !g_ImageWaiter.AddWaitable( newCommit.get() ) )
+				{
+					xwm_log.errorf( "Failed to wait for commit %lu fence fd %d", newCommit->commitID, commitFence.fd );
+					abort();
+				}
+				break;
+			case gamescope::commit_fence::Action::Error:
+				xwm_log.errorf( "Invalid fence for commit %lu (error %d)", newCommit->commitID, commitFence.error );
+				abort();
+		}
 	}
 
 	w->commit_queue.push_back( std::move(newCommit) );
