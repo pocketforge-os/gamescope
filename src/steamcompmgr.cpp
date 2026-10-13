@@ -8845,11 +8845,26 @@ steamcompmgr_main(int argc, char **argv)
 
 		g_bOutputHDREnabled = (g_bSupportsHDR_CachedValue || g_bForceHDR10OutputDebug) && cv_hdr_enabled;
 
+		const gamescope::IBackendConnector *outputConnector =
+			GetBackend()->GetCurrentConnector();
+		const gamescope::output_rotation::Transform physicalOutputTransform = outputConnector
+			? gamescope::output_rotation::transformFromPanelOrientation(
+				outputConnector->GetCurrentOrientation() )
+			: gamescope::output_rotation::Transform::Normal;
+		const gamescope::output_rotation::OutputRingState currentOutputRing = {
+			.logicalExtent = { currentOutputWidth, currentOutputHeight },
+			.outputTransform = g_output.outputTransform,
+		};
+		const gamescope::output_rotation::OutputRingState requiredOutputRing =
+			gamescope::output_rotation::requiredOutputRingState(
+				{ g_nOutputWidth, g_nOutputHeight }, physicalOutputTransform,
+				GetBackend()->UsesVulkanOutputRotation() );
+
 		// Pick our width/height for this potential frame, regardless of how it might change later
 		// At some point we might even add proper locking so we get real updates atomically instead
 		// of whatever jumble of races the below might cause over a couple of frames
-		if ( currentOutputWidth != g_nOutputWidth ||
-			 currentOutputHeight != g_nOutputHeight ||
+		if ( gamescope::output_rotation::outputRingNeedsRebuild(
+				currentOutputRing, requiredOutputRing ) ||
 			 currentOutputRefresh != g_nOutputRefresh ||
 			 currentHDROutput != g_bOutputHDREnabled ||
 			 currentHDRForce != g_bForceHDRSupportDebug )

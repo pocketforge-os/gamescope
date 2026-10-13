@@ -268,6 +268,21 @@ FrameContract frameContract( Extent logicalExtent, Transform outputTransform )
 	};
 }
 
+OutputRingState requiredOutputRingState( Extent logicalExtent,
+	Transform physicalTransform, bool rotateInVulkan )
+{
+	return {
+		.logicalExtent = logicalExtent,
+		.outputTransform = rotateInVulkan ? physicalTransform : Transform::Normal,
+	};
+}
+
+bool outputRingNeedsRebuild( const OutputRingState &current,
+	const OutputRingState &required )
+{
+	return current != required;
+}
+
 DirectScanoutDecision directScanoutDecision( const DirectScanoutInput &input )
 {
 	auto reject = []( DirectScanoutRejection rejection ) {
