@@ -2,24 +2,83 @@
 
 ## Scope
 
-This design extends the linear-output staging path for a portrait KMS mode when
-Gamescope exposes a landscape logical session and the KMS plane has no rotation
-property. The compositor owns the transform. Mesa, the kernel, input policy, and
-the panel mode remain unchanged, and this document makes no device-performance
-or device-correctness claim.
+This design extends the linear-output staging path for a KMS mode whose current
+logical orientation may be 0, 90, 180, or 270 degrees. The compositor owns the
+transform. Mesa, the kernel, input policy, and the panel mode remain unchanged,
+and this document makes no device-performance or device-correctness claim.
 
-The logical scene is `W x H` (`1280x720` in the target configuration). The KMS
-mode and every final scanout allocation are native `H x W` (`720x1280`). The KMS
-plane transform is always normal. A non-normal KMS transform is not a fallback.
+For a quarter turn, the logical scene is `W x H` (`1280x720` in the target
+configuration) and the KMS mode and final scanout allocations are native `H x W`
+(`720x1280`). For identity and 180 degrees, dimensions do not swap. The KMS plane
+transform is always normal. A non-normal KMS transform is not a fallback.
+
+## Runtime orientation authority
+
+Gamescope consumes `OrientationState v1` from pocketforge-os/runtime commit
+`5da5c97ccd94e44293d25b4888f8c554b49721a0`; it does not reproduce posture,
+accelerometer, lock, or preference policy. The direction contract is defined by
+`crates/pf-session-authority/src/orientation_source.rs:416-424`: `cw90`, `90`,
+and `right side up` are `QuarterTurn::Right`, while `cw270`, `270`, and
+`left side up` are `QuarterTurn::Left`. The verbatim cross-source fixture at
+`crates/pf-session-authority/tests/orientation/source.rs:35-69,121-126` requires
+descriptor `rotation="cw90"`, posture `screen_rotation={screen_main="cw90"}`,
+DRM `right side up`, and sensor `right-up` all to produce `Right`.
+`crates/pf-session-authority/src/orientation.rs:28-54,367-372,400-407` composes
+and publishes that value unchanged.
+
+The resulting mapping is therefore a contract fact:
+
+| RPC `output` | Gamescope logical-to-native transform | Wayland output transform |
+|---|---|---|
+| `normal` | 0 | `WL_OUTPUT_TRANSFORM_NORMAL` |
+| `right` | clockwise 90 | `WL_OUTPUT_TRANSFORM_90` |
+| `upsidedown` | 180 | `WL_OUTPUT_TRANSFORM_180` |
+| `left` | clockwise 270 | `WL_OUTPUT_TRANSFORM_270` |
+
+The client connects to `/run/pocketforge/session-authority.sock`. Messages are
+JSON in the runtime `pf-wire` framing: a four-byte big-endian length, capped at
+64 KiB, followed by one body. It first sends
+`{"method":"orientation","version":1,"wait_ms":0}`. After a complete state it
+reconnects for each long poll with the state's serial in `after_serial` and
+`wait_ms:30000`. Unknown versions, result tags or enum values, missing fields,
+malformed/trailing JSON, oversized frames, and EOF with an incomplete prefix or
+body are failures rather than an orientation observation.
+
+After a failure Gamescope drops the watch cursor, immediately returns to the
+connector's fixed-mount transform, then retries a full snapshot with
+interruptible exponential backoff from 100 ms to 5 s and bounded jitter. A
+complete response resets the backoff. `--force-orientation` suppresses the
+subscriber and remains the lifetime diagnostic override.
+
+An accepted change is delivered through a mailbox to the Wayland thread. In
+one generation it updates the logical output extent, DRM connector orientation,
+renderer/direct-scanout generation, every live surface's v6
+`preferred_buffer_transform`, XDG/layer configure sizes, and each Xwayland
+output's native mode plus transform. Xwayland consequently reports the new
+logical root dimensions and RandR rotation and emits its normal screen-change
+notification. Old committed buffers remain compositable, but stale-generation
+plane candidates cannot scan out. Active touch contacts are cancelled and
+subsequent native touch coordinates use the same inverse transform as pixels;
+pointer constraints are recomputed only when an active contact was cancelled.
+
+`presentation=fill` has a deliberate 180-degree compatibility case. When the
+logical orientation is `landscape_flipped` but an app permits only `landscape`,
+Gamescope applies an app-to-output 180 and then the output 180. The transforms
+cancel at the native panel, dimensions stay unchanged, and no bars are added.
+If the app permits `landscape_flipped`, the app transform is identity and the
+output 180 remains. Gamescope is the only component that rotates either case.
 
 ## Algebra and coordinate spaces
 
 Coordinates name pixels from a top-left origin. `90` is a clockwise logical to
-native quarter turn and `270` is counter-clockwise. For logical pixel `(x,y)`:
+native quarter turn and `270` is counter-clockwise. For a logical extent
+`W x H` and logical pixel `(x,y)`:
 
 | Transform | Logical to native `(u,v)` | Native to logical `(x,y)` |
 |---|---|---|
+| 0 | `(x, y)` | `(u, v)` |
 | 90 | `(H - 1 - y, x)` | `(v, H - 1 - u)` |
+| 180 | `(W - 1 - x, H - 1 - y)` | `(W - 1 - u, H - 1 - v)` |
 | 270 | `(y, W - 1 - x)` | `(W - 1 - v, u)` |
 
 Damage and layer bounds are half-open rectangles. For
@@ -27,10 +86,12 @@ Damage and layer bounds are half-open rectangles. For
 
 | Transform | Native rectangle |
 |---|---|
+| 0 | `[x0,x1) x [y0,y1)` |
 | 90 | `[H-y1,H-y0) x [x0,x1)` |
+| 180 | `[W-x1,W-x0) x [H-y1,H-y0)` |
 | 270 | `[y0,y1) x [W-x1,W-x0)` |
 
-The formulas preserve area and make 90/270 true inverses. Bounds checks happen
+The formulas preserve area and make every transform invertible. Bounds checks happen
 before unsigned subtraction, so invalid points or rectangles fail closed.
 
 Cursor positions/hotspots and external-overlay bounds originate in logical
@@ -164,9 +225,9 @@ does not double-rotate the client or overlay.
 
 ## Test contract
 
-Dependency-free tests use asymmetric labeled base and overlay images so
+Hermetic tests use asymmetric labeled base and overlay images so
 transpose, direction, mirror, and off-by-one errors differ visibly. They cover
-both transforms and their inverses, extent and aligned-stride calculations,
+all four transforms and their inverses, extent and aligned-stride calculations,
 damage rectangles, cursor points, external-overlay rectangles, logical capture
 versus native scanout, KMS-normal policy, base-only and two-plane plane records,
 base-record identity across overlay show/hide, the distinct Wayland and
@@ -174,6 +235,15 @@ Vulkan/Xwayland metadata paths, and negative controls for every fail-closed
 eligibility input.
 
 A software-Vulkan test separately runs the production compute shader at the
-target dimensions. Every pixel in its asymmetric `1280x720` source is unique;
-the test validates the complete `720x1280` LINEAR staging image for both quarter
-turns while honoring the implementation-reported row pitch.
+target dimensions. Every pixel in its asymmetric source is unique; the test
+validates the complete LINEAR staging image for 0/90/180/270 while honoring the
+implementation-reported row pitch.
+
+The runtime tests copy the runtime-owned direction fixture literally, exercise
+strict framed parsing and real private Unix sockets, and cover an absent
+authority, reconnect/backoff reset, a locked snapshot, live-client transition,
+duplicate-state no-op, both 180-degree fill cases, and interruptible shutdown.
+The Xwayland test starts the built compositor with the CI-pinned Xwayland,
+creates and maps a real X client, then checks root dimensions, RandR rotation,
+and screen-change notifications across normal/right/upsidedown/left. It also
+proves that an equivalent state with a new serial emits no RandR change.
