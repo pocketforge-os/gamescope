@@ -58,8 +58,10 @@ class SourceClosureTests(unittest.TestCase):
 		gamescope_names = [
 			"gamescope:output-staging",
 			"gamescope:output-rotation",
+			"gamescope:runtime-orientation",
 			"gamescope:privileged-wayland",
 			"gamescope:output-rotation-vulkan",
+			"gamescope:xwayland-orientation",
 			"gamescope:output-staging-vulkan",
 			"gamescope:convar",
 			"gamescope:vulkan_present_features",
@@ -94,7 +96,7 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		self.assertIn("registered_gamescope=16", positive.stdout)
+		self.assertIn("registered_gamescope=18", positive.stdout)
 		shrink_negative = subprocess.run(
 			[sys.executable, str(TEST_REGISTRATION)],
 			input=fixture.replace("gamescope:output-staging\n", ""),
@@ -167,6 +169,29 @@ class SourceClosureTests(unittest.TestCase):
 			"missing required registered test: gamescope:commit-fence",
 			commit_fence_negative.stderr,
 		)
+		for required_orientation_test in (
+			"gamescope:runtime-orientation",
+			"gamescope:xwayland-orientation",
+		):
+			with self.subTest(required_orientation_test=required_orientation_test):
+				orientation_substitution_negative = subprocess.run(
+					[sys.executable, str(TEST_REGISTRATION)],
+					input=fixture.replace(
+						f"{required_orientation_test}\n",
+						"gamescope:substituted-orientation-test\n",
+					),
+					text=True,
+					capture_output=True,
+				)
+				self.assertNotEqual(
+					orientation_substitution_negative.returncode,
+					0,
+					orientation_substitution_negative.stdout,
+				)
+				self.assertIn(
+					f"missing required registered test: {required_orientation_test}",
+					orientation_substitution_negative.stderr,
+				)
 
 	def setUp(self) -> None:
 		temp_parent = Path(os.environ.get("RUNNER_TEMP", ROOT / ".ci-cache"))
