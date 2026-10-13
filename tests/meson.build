@@ -135,3 +135,10 @@ test_stop_thread = executable(
 	include_directories: [srcdir],
 )
 test('stop-thread', test_stop_thread)
+
+test_vulkan_device_extensions = executable(
+	'test_vulkan_device_extensions',
+	'test_vulkan_device_extensions.cpp',
+	include_directories: [srcdir],
+)
+test('vulkan-device-extensions', test_vulkan_device_extensions)
