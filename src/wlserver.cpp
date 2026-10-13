@@ -62,6 +62,7 @@
 #include "hdmi.h"
 #include "main.hpp"
 #include "steamcompmgr.hpp"
+#include "runtime_orientation.hpp"
 #include "color_helpers.h"
 #include "log.hpp"
 #include "ime.hpp"
@@ -80,6 +81,8 @@
 #include "gpuvis_trace_utils.h"
 
 #include <algorithm>
+#include <array>
+#include <cinttypes>
 #include <fstream>
 #include <list>
 #include <set>
@@ -90,6 +93,8 @@ static LogScope wl_log("wlserver");
 using namespace std::literals;
 
 extern gamescope::ConVar<bool> cv_drm_debug_disable_explicit_sync;
+extern GamescopePanelOrientation g_DesiredInternalOrientation;
+extern bool g_bRotated;
 
 //#define GAMESCOPE_SWAPCHAIN_DEBUG
 
@@ -113,6 +118,13 @@ std::mutex g_wlserver_xdg_shell_windows_lock;
 static struct wl_list pending_surfaces = {0};
 
 static std::atomic<bool> g_bShutdownWLServer{ false };
+static std::atomic<uint64_t> g_orientationGeneration{ 0 };
+static std::atomic<GamescopePanelOrientation> g_appliedOrientation{
+	GAMESCOPE_PANEL_ORIENTATION_AUTO };
+static std::mutex g_orientationMailboxMutex;
+static bool g_orientationMailboxPending = false;
+static std::optional<gamescope::runtime_orientation::State> g_orientationMailbox;
+static std::unique_ptr<gamescope::runtime_orientation::ReconfigurationState> g_orientationState;
 
 static void wlserver_x11_surface_info_set_wlr( struct wlserver_x11_surface_info *surf, struct wlr_surface *wlr_surf, bool override );
 wlserver_wl_surface_info *get_wl_surface_info(struct wlr_surface *wlr_surf);
@@ -122,6 +134,41 @@ static void handle_pointer_constraint(struct wl_listener *listener, void *data);
 static void wlserver_constrain_cursor( struct wlr_pointer_constraint_v1 *pNewConstraint );
 struct wlr_surface *wlserver_surface_to_main_surface( struct wlr_surface *pSurface );
 bool wlserver_process_hotkeys( wlr_keyboard *keyboard, uint32_t key, bool press );
+
+static GamescopePanelOrientation panel_orientation(
+	gamescope::output_rotation::Transform transform )
+{
+	switch ( transform )
+	{
+		case gamescope::output_rotation::Transform::Normal: return GAMESCOPE_PANEL_ORIENTATION_0;
+		case gamescope::output_rotation::Transform::Rotate90: return GAMESCOPE_PANEL_ORIENTATION_90;
+		case gamescope::output_rotation::Transform::Rotate180: return GAMESCOPE_PANEL_ORIENTATION_180;
+		case gamescope::output_rotation::Transform::Rotate270: return GAMESCOPE_PANEL_ORIENTATION_270;
+	}
+	return GAMESCOPE_PANEL_ORIENTATION_0;
+}
+
+static wl_output_transform wayland_transform(
+	gamescope::output_rotation::Transform transform )
+{
+	return static_cast<wl_output_transform>( uint32_t( transform ) );
+}
+
+static void initialize_runtime_orientation()
+{
+	gamescope::IBackendConnector *connector = GetBackend()->GetCurrentConnector();
+	const GamescopePanelOrientation fixed = connector
+		? connector->GetFixedMountOrientation()
+		: GAMESCOPE_PANEL_ORIENTATION_0;
+	const auto fixedTransform = gamescope::output_rotation::transformFromPanelOrientation( fixed );
+	const gamescope::output_rotation::Extent currentLogical = {
+		uint32_t( g_nOutputWidth ), uint32_t( g_nOutputHeight ) };
+	const auto native = gamescope::output_rotation::transformExtent(
+		currentLogical, fixedTransform );
+	g_orientationState = std::make_unique<gamescope::runtime_orientation::ReconfigurationState>(
+		native, gamescope::runtime_orientation::fixedMountState( fixedTransform ) );
+	g_appliedOrientation.store( fixed, std::memory_order_relaxed );
+}
 
 extern std::atomic<bool> hasRepaint;
 
@@ -216,6 +263,7 @@ std::optional<ResListEntry_t> PrepareCommit( struct wlr_surface *surf, struct wl
 				: gamescope::output_rotation::ClientClass::Wayland,
 			.waylandBufferTransform = normalize_wayland_buffer_transform( surf->current.transform ),
 			.vulkanPreTransform = normalize_vulkan_pre_transform( pFeedback ),
+			.orientationGeneration = g_orientationGeneration.load( std::memory_order_relaxed ),
 		},
 		std::move(wl_surf->pending_presentation_feedbacks),
 		wl_surf->present_id,
@@ -676,6 +724,7 @@ static void handle_wl_surface_destroy( struct wl_listener *l, void *data )
 		wlserver.kb_focus_surface = nullptr;
 
 	wlserver.current_dropdown_surfaces.erase( surf->wlr );
+	wlserver.surfaces.erase( surf->wlr );
 
 	for (auto it = g_PendingCommits.begin(); it != g_PendingCommits.end();)
 	{
@@ -732,6 +781,14 @@ static void wlserver_new_surface(struct wl_listener *l, void *data)
 	wl_signal_add( &wlr_surf->events.commit, &wl_surface_info->commit );
 
 	wlr_surf->data = wl_surface_info;
+	wlserver.surfaces.insert( wlr_surf );
+	const GamescopePanelOrientation applied = g_appliedOrientation.load();
+	if ( applied != GAMESCOPE_PANEL_ORIENTATION_AUTO )
+	{
+		const auto transform = gamescope::output_rotation::transformFromPanelOrientation( applied );
+		wlr_surface_set_preferred_buffer_transform( wlr_surf,
+			static_cast<wl_output_transform>( uint32_t( transform ) ) );
+	}
 
 	struct wlserver_x11_surface_info *s, *tmp;
 	wl_list_for_each_safe(s, tmp, &pending_surfaces, pending_link)
@@ -1911,9 +1968,19 @@ gamescope_xwayland_server_t::gamescope_xwayland_server_t(wl_display *display, in
 		width = g_nOutputWidth;
 		height = g_nOutputHeight;
 	}
+	wl_output_transform initialTransform = WL_OUTPUT_TRANSFORM_NORMAL;
+	if ( g_orientationState )
+	{
+		const auto &plan = g_orientationState->plan();
+		width = plan.nativeExtent.width;
+		height = plan.nativeExtent.height;
+		initialTransform = wayland_transform( gamescope::output_rotation::compose(
+			plan.appToOutput, plan.outputTransform ) );
+	}
 
 	wlr_output_state_set_enabled(output_state, true);
 	wlr_output_state_set_custom_mode(output_state, width, height, refresh);
+	wlr_output_state_set_transform(output_state, initialTransform);
 	if (!wlr_output_commit_state(output, output_state))
 	{
 		wl_log.errorf("Failed to commit headless output");
@@ -2104,6 +2171,7 @@ static std::unique_ptr<gamescope::GamescopeInputServer> g_InputServer;
 
 bool wlserver_init( void ) {
 	assert( wlserver.display != nullptr );
+	initialize_runtime_orientation();
 
 	wl_list_init(&pending_surfaces);
 
@@ -2155,7 +2223,7 @@ bool wlserver_init( void ) {
 
 	wlr_renderer_init_wl_display(wlserver.wlr.renderer, wlserver.display);
 
-	wlserver.wlr.compositor = wlr_compositor_create(wlserver.display, 5, wlserver.wlr.renderer);
+	wlserver.wlr.compositor = wlr_compositor_create(wlserver.display, 6, wlserver.wlr.renderer);
 
 	wl_signal_add( &wlserver.wlr.compositor->events.new_surface, &new_surface_listener );
 
@@ -2344,6 +2412,117 @@ extern std::mutex g_SteamCompMgrXWaylandServerMutex;
 
 static int g_wlserverNudgePipe[2] = {-1, -1};
 
+static void queue_runtime_orientation(
+	const std::optional<gamescope::runtime_orientation::State> &state,
+	std::string_view status )
+{
+	{
+		std::lock_guard lock( g_orientationMailboxMutex );
+		g_orientationMailbox = state;
+		g_orientationMailboxPending = true;
+	}
+	if ( state )
+		wl_log.infof( "orientation authority %.*s serial=%" PRIu64,
+			int( status.size() ), status.data(), state->serial );
+	else
+		wl_log.infof( "orientation authority unavailable: %.*s; using fixed mount",
+			int( status.size() ), status.data() );
+	if ( g_wlserverNudgePipe[1] >= 0 )
+	{
+		const uint8_t byte = 1;
+		if ( write( g_wlserverNudgePipe[1], &byte, 1 ) < 0 && errno != EAGAIN )
+			wl_log.errorf_errno( "orientation nudge failed" );
+	}
+}
+
+static void apply_runtime_orientation()
+{
+	std::optional<gamescope::runtime_orientation::State> state;
+	{
+		std::lock_guard lock( g_orientationMailboxMutex );
+		if ( !g_orientationMailboxPending ) return;
+		state = g_orientationMailbox;
+		g_orientationMailboxPending = false;
+	}
+	if ( !g_orientationState ) return;
+	const auto change = state
+		? g_orientationState->apply( *state, !wlserver.surfaces.empty() )
+		: g_orientationState->fallbackToFixedMount( !wlserver.surfaces.empty() );
+	if ( !change.any() ) return;
+
+	const auto &plan = g_orientationState->plan();
+	gamescope::IBackendConnector *connector = GetBackend()->GetCurrentConnector();
+	if ( connector )
+		connector->SetRuntimeOrientation( state
+			? std::optional{ panel_orientation( plan.outputTransform ) }
+			: std::nullopt );
+	g_appliedOrientation.store( panel_orientation( plan.outputTransform ),
+		std::memory_order_relaxed );
+	g_nOutputWidth = plan.logicalExtent.width;
+	g_nOutputHeight = plan.logicalExtent.height;
+	g_bRotated = plan.outputTransform == gamescope::output_rotation::Transform::Rotate90 ||
+		plan.outputTransform == gamescope::output_rotation::Transform::Rotate270;
+
+	const auto appTransform = gamescope::output_rotation::compose(
+		plan.appToOutput, plan.outputTransform );
+	const uint64_t generation = ( change.physical || change.appCompatibility )
+		? g_orientationGeneration.fetch_add( 1, std::memory_order_relaxed ) + 1
+		: g_orientationGeneration.load( std::memory_order_relaxed );
+
+	for ( struct wlr_surface *surface : wlserver.surfaces )
+	{
+		const wlserver_wl_surface_info *info = get_wl_surface_info( surface );
+		const auto preferred = info && info->x11_surface ? appTransform : plan.outputTransform;
+		wlr_surface_set_preferred_buffer_transform( surface, wayland_transform( preferred ) );
+		if ( !info || !info->xdg_surface ) continue;
+		if ( info->xdg_surface->xdg_surface && info->xdg_surface->xdg_surface->toplevel )
+		{
+			wlr_xdg_toplevel_set_size( info->xdg_surface->xdg_surface->toplevel,
+				plan.logicalExtent.width, plan.logicalExtent.height );
+			wlr_xdg_surface_schedule_configure( info->xdg_surface->xdg_surface );
+		}
+		if ( info->xdg_surface->layer_surface )
+			wlr_layer_surface_v1_configure( info->xdg_surface->layer_surface,
+				plan.logicalExtent.width, plan.logicalExtent.height );
+	}
+
+	for ( const auto &server : wlserver.wlr.xwayland_servers )
+	{
+		wlr_output_state *outputState = server->get_output_state();
+		wlr_output_state_set_custom_mode( outputState, plan.nativeExtent.width,
+			plan.nativeExtent.height, g_nOutputRefresh );
+		wlr_output_state_set_transform( outputState, wayland_transform( appTransform ) );
+		if ( !wlr_output_commit_state( server->get_output(), outputState ) )
+			wl_log.errorf( "Failed to commit orientation to Xwayland output" );
+	}
+
+	if ( change.cancelTouches )
+	{
+		std::set<wlr_seat_client *> clients;
+		const bool hadActiveTouches = !wlserver.touch_down_ids.empty();
+		for ( int32_t id : wlserver.touch_down_ids )
+		{
+			wlr_touch_point *point = wlr_seat_touch_get_point( wlserver.wlr.seat, id );
+			if ( point && point->client ) clients.insert( point->client );
+		}
+		for ( wlr_seat_client *client : clients )
+			wlr_seat_touch_notify_cancel( wlserver.wlr.seat, client );
+		wlserver.touch_down_ids.clear();
+		if ( hadActiveTouches )
+			wlserver_update_cursor_constraint();
+	}
+
+	wl_log.infof( "orientation applied generation=%" PRIu64 " output=%u logical=%ux%u",
+		generation, uint32_t( plan.outputTransform ), plan.logicalExtent.width,
+		plan.logicalExtent.height );
+	nudge_steamcompmgr();
+}
+
+uint64_t wlserver_orientation_generation()
+{
+	return g_orientationGeneration.load( std::memory_order_relaxed );
+}
+
 void wlserver_run(void)
 {
 	pthread_setname_np( pthread_self(), "gamescope-wl" );
@@ -2352,6 +2531,21 @@ void wlserver_run(void)
 	{
 		wl_log.errorf_errno( "wlserver: pipe2 failed" );
 		exit( 1 );
+	}
+	std::unique_ptr<gamescope::runtime_orientation::Subscription> orientationSubscription;
+	if ( g_DesiredInternalOrientation == GAMESCOPE_PANEL_ORIENTATION_AUTO )
+	{
+		const char *configuredSocket = getenv( "GAMESCOPE_ORIENTATION_SOCKET" );
+		const std::string socketPath = configuredSocket
+			? std::string{ configuredSocket }
+			: std::string{ gamescope::runtime_orientation::DefaultSocket };
+		orientationSubscription = std::make_unique<gamescope::runtime_orientation::Subscription>(
+			socketPath, queue_runtime_orientation );
+		orientationSubscription->start();
+	}
+	else
+	{
+		wl_log.infof( "runtime orientation suppressed by --force-orientation" );
 	}
 
 	struct pollfd pollfds[2] = {
@@ -2397,7 +2591,16 @@ void wlserver_run(void)
 
 			wlserver_unlock();
 		}
+		if ( pollfds[1].revents & POLLIN )
+		{
+			std::array<uint8_t, 64> bytes;
+			while ( read( g_wlserverNudgePipe[0], bytes.data(), bytes.size() ) > 0 ) {}
+			wlserver_lock();
+			apply_runtime_orientation();
+			wlserver_unlock();
+		}
 	}
+	if ( orientationSubscription ) orientationSubscription->stop();
 
 	wlserver.bWaylandServerRunning = false;
 	wlserver.bWaylandServerRunning.notify_all();
@@ -3060,7 +3263,9 @@ void wlserver_touchmotion( double x, double y, int touch_id, uint32_t time, bool
 
 		if ( connector )
 		{
-			apply_touchscreen_orientation(connector->GetCurrentOrientation(), &tx, &ty);
+			const GamescopePanelOrientation orientation = g_appliedOrientation.load();
+			apply_touchscreen_orientation( orientation == GAMESCOPE_PANEL_ORIENTATION_AUTO
+				? connector->GetCurrentOrientation() : orientation, &tx, &ty );
 		}
 
 		tx *= g_nOutputWidth;
@@ -3118,7 +3323,9 @@ void wlserver_touchdown( double x, double y, int touch_id, uint32_t time, gamesc
 
 		if ( connector )
 		{
-			apply_touchscreen_orientation(connector->GetCurrentOrientation(), &tx, &ty);
+			const GamescopePanelOrientation orientation = g_appliedOrientation.load();
+			apply_touchscreen_orientation( orientation == GAMESCOPE_PANEL_ORIENTATION_AUTO
+				? connector->GetCurrentOrientation() : orientation, &tx, &ty );
 		}
 
 		tx *= g_nOutputWidth;
@@ -3249,6 +3456,13 @@ static void wlserver_x11_surface_info_set_wlr( struct wlserver_x11_surface_info 
 		surf->main_surface = wlr_surf;
 	}
 	wl_surf_info->x11_surface = surf;
+	if ( g_orientationState )
+	{
+		const auto &plan = g_orientationState->plan();
+		wlr_surface_set_preferred_buffer_transform( wlr_surf,
+			wayland_transform( gamescope::output_rotation::compose(
+				plan.appToOutput, plan.outputTransform ) ) );
+	}
 
 	for (auto it = g_PendingCommits.begin(); it != g_PendingCommits.end();)
 	{

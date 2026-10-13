@@ -449,6 +449,15 @@ namespace gamescope
 		{
 			return m_ChosenOrientation;
 		}
+		GamescopePanelOrientation GetFixedMountOrientation() const override
+		{
+			return m_FixedMountOrientation;
+		}
+		void SetRuntimeOrientation( std::optional<GamescopePanelOrientation> orientation ) override
+		{
+			m_RuntimeOrientation = orientation;
+			m_ChosenOrientation = m_RuntimeOrientation.value_or( m_FixedMountOrientation );
+		}
 
 		bool SupportsHDR() const override
 		{
@@ -544,7 +553,9 @@ namespace gamescope
 			bool bEdidChanged = false;
 		} m_Mutable;
 
+		GamescopePanelOrientation m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_AUTO;
 		GamescopePanelOrientation m_ChosenOrientation = GAMESCOPE_PANEL_ORIENTATION_AUTO;
+		std::optional<GamescopePanelOrientation> m_RuntimeOrientation;
 
 		ConnectorProperties m_Props;
 	};
@@ -2291,7 +2302,7 @@ namespace gamescope
 	{
 		if ( this->GetScreenType() == GAMESCOPE_SCREEN_TYPE_INTERNAL && g_DesiredInternalOrientation != GAMESCOPE_PANEL_ORIENTATION_AUTO )
 		{
-			m_ChosenOrientation = g_DesiredInternalOrientation;
+			m_FixedMountOrientation = g_DesiredInternalOrientation;
 		}
 		else
 		{
@@ -2300,17 +2311,17 @@ namespace gamescope
 				switch ( this->GetProperties().panel_orientation->GetCurrentValue() )
 				{
 					case DRM_MODE_PANEL_ORIENTATION_NORMAL:
-						m_ChosenOrientation = GAMESCOPE_PANEL_ORIENTATION_0;
-						return;
+						m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_0;
+						goto fixed_mount_chosen;
 					case DRM_MODE_PANEL_ORIENTATION_BOTTOM_UP:
-						m_ChosenOrientation = GAMESCOPE_PANEL_ORIENTATION_180;
-						return;
+						m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_180;
+						goto fixed_mount_chosen;
 					case DRM_MODE_PANEL_ORIENTATION_LEFT_UP:
-						m_ChosenOrientation = GAMESCOPE_PANEL_ORIENTATION_90;
-						return;
+						m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_90;
+						goto fixed_mount_chosen;
 					case DRM_MODE_PANEL_ORIENTATION_RIGHT_UP:
-						m_ChosenOrientation = GAMESCOPE_PANEL_ORIENTATION_270;
-						return;
+						m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_270;
+						goto fixed_mount_chosen;
 					default:
 						break;
 				}
@@ -2319,15 +2330,17 @@ namespace gamescope
 			if ( this->GetScreenType() == gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL && pMode )
 			{
 				// Auto-detect portait mode for internal displays
-				m_ChosenOrientation = pMode->hdisplay < pMode->vdisplay
+				m_FixedMountOrientation = pMode->hdisplay < pMode->vdisplay
 					? GAMESCOPE_PANEL_ORIENTATION_270
 					: GAMESCOPE_PANEL_ORIENTATION_0;
 			}
 			else
 			{
-				m_ChosenOrientation = GAMESCOPE_PANEL_ORIENTATION_0;
+				m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_0;
 			}
 		}
+	fixed_mount_chosen:
+		m_ChosenOrientation = m_RuntimeOrientation.value_or( m_FixedMountOrientation );
 	}
 
 	void CDRMConnector::ParseEDID()
@@ -3674,6 +3687,7 @@ static const char *direct_scanout_rejection_name(
 		case DirectScanoutRejection::ContentExtentMismatch: return "content extent mismatch";
 		case DirectScanoutRejection::ClientTransformNotProven: return "client transform does not prove native orientation";
 		case DirectScanoutRejection::AmbiguousClientTransform: return "ambiguous or double client transform";
+		case DirectScanoutRejection::StaleOrientationGeneration: return "stale orientation generation";
 		case DirectScanoutRejection::KmsTransformNotNormal: return "KMS transform is not normal";
 		case DirectScanoutRejection::IncompatibleFormat: return "incompatible plane format";
 		case DirectScanoutRejection::AmbiguousModifier: return "implicit or invalid modifier";
@@ -4398,6 +4412,7 @@ namespace gamescope
 				.logicalExtent = { uint32_t( g_nOutputWidth ), uint32_t( g_nOutputHeight ) },
 				.layerCount = uint32_t( pFrameInfo->layerCount ),
 				.normalKmsTransform = true,
+				.orientationGeneration = wlserver_orientation_generation(),
 			};
 
 			if ( input.layerCount <= MaxNativeDirectLayers )

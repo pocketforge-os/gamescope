@@ -182,6 +182,11 @@ namespace gamescope
 
         virtual GamescopeScreenType GetScreenType() const = 0;
         virtual GamescopePanelOrientation GetCurrentOrientation() const = 0;
+        virtual GamescopePanelOrientation GetFixedMountOrientation() const
+        {
+            return GetCurrentOrientation();
+        }
+        virtual void SetRuntimeOrientation( std::optional<GamescopePanelOrientation> orientation ) {}
         virtual bool SupportsHDR() const = 0;
         virtual bool IsHDRActive() const = 0;
         virtual const BackendConnectorHDRInfo &GetHDRInfo() const = 0;

@@ -47,6 +47,7 @@ librt_dep = cppc.find_library('rt', required : get_option('pipewire'))
 hwdata_dep = dependency('hwdata', required : false)
 
 dep_x11 = dependency('x11')
+dep_xrandr = dependency('xrandr')
 dep_wayland = dependency('wayland-client')
 vulkan_dep = dependency('vulkan')
 
