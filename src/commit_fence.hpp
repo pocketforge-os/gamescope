@@ -33,4 +33,9 @@ namespace gamescope::commit_fence
 	{
 		return { .action = Action::Error, .error = error };
 	}
+
+	constexpr bool requiresPostEnqueueNudge( Action action )
+	{
+		return action == Action::Ready;
+	}
 }
