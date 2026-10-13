@@ -90,6 +90,19 @@ struct FrameContract
 
 FrameContract frameContract( Extent logicalExtent, Transform outputTransform );
 
+struct OutputRingState
+{
+	Extent logicalExtent;
+	Transform outputTransform;
+
+	bool operator==( const OutputRingState & ) const = default;
+};
+
+OutputRingState requiredOutputRingState( Extent logicalExtent,
+	Transform physicalTransform, bool rotateInVulkan );
+bool outputRingNeedsRebuild( const OutputRingState &current,
+	const OutputRingState &required );
+
 enum class DirectScanoutRejection
 {
 	Accepted,
