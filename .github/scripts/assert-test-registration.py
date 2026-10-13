@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 EXPECTED_COUNTS = {
-	"gamescope": 6,
+	"gamescope": 7,
 	"libdisplay-info": 65,
 	"libliftoff": 58,
 }
@@ -21,6 +21,7 @@ REQUIRED = {
 	"gamescope:output-staging-vulkan",
 	"gamescope:convar",
 	"gamescope:vulkan_present_features",
+	"gamescope:drm_commit_probe",
 	"libdisplay-info:pocketforge-source-locator",
 	"libliftoff:check_ndebug",
 	"libliftoff:alloc@basic",
@@ -51,7 +52,7 @@ def main() -> int:
 	if missing:
 		print(f"missing required registered test: {missing[0]}", file=sys.stderr)
 		return 1
-	print("registered_gamescope=6")
+	print("registered_gamescope=7")
 	print("registered_libdisplay_info=65")
 	print("registered_libliftoff=58")
 	return 0

@@ -51,3 +51,10 @@ test_vulkan_present_features = executable(
 	include_directories: [srcdir],
 )
 test('vulkan_present_features', test_vulkan_present_features)
+
+test_drm_commit_probe = executable(
+	'test_drm_commit_probe',
+	'test_drm_commit_probe.cpp',
+	include_directories: [srcdir],
+)
+test('drm_commit_probe', test_drm_commit_probe)
