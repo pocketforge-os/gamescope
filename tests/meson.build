@@ -178,3 +178,16 @@ test_commit_fence = executable(
 	include_directories: [srcdir],
 )
 test('commit-fence', test_commit_fence)
+
+test_no_fence_presentation = executable(
+	'test_no_fence_presentation',
+	[protocols_client_src, 'test_no_fence_presentation.cpp'],
+	include_directories: [srcdir],
+	dependencies: [dep_wayland, stb_dep],
+)
+test(
+	'no-fence-presentation',
+	test_no_fence_presentation,
+	args: [gamescope_exe, gamescope_reaper_exe],
+	timeout: 20,
+)

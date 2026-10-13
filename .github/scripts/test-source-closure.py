@@ -74,6 +74,7 @@ class SourceClosureTests(unittest.TestCase):
 			"gamescope:input-protocol-globals",
 			"gamescope:vulkan-device-extensions",
 			"gamescope:commit-fence",
+			"gamescope:no-fence-presentation",
 		]
 		names = gamescope_names + ["libdisplay-info:pocketforge-source-locator"]
 		names.extend(f"libdisplay-info:fixture-{index}" for index in range(64))
@@ -96,7 +97,7 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		self.assertIn("registered_gamescope=18", positive.stdout)
+		self.assertIn("registered_gamescope=19", positive.stdout)
 		shrink_negative = subprocess.run(
 			[sys.executable, str(TEST_REGISTRATION)],
 			input=fixture.replace("gamescope:output-staging\n", ""),
@@ -168,6 +169,24 @@ class SourceClosureTests(unittest.TestCase):
 		self.assertIn(
 			"missing required registered test: gamescope:commit-fence",
 			commit_fence_negative.stderr,
+		)
+		no_fence_presentation_negative = subprocess.run(
+			[sys.executable, str(TEST_REGISTRATION)],
+			input=fixture.replace(
+				"gamescope:no-fence-presentation\n",
+				"gamescope:substituted-no-fence-presentation-test\n",
+			),
+			text=True,
+			capture_output=True,
+		)
+		self.assertNotEqual(
+			no_fence_presentation_negative.returncode,
+			0,
+			no_fence_presentation_negative.stdout,
+		)
+		self.assertIn(
+			"missing required registered test: gamescope:no-fence-presentation",
+			no_fence_presentation_negative.stderr,
 		)
 		for required_orientation_test in (
 			"gamescope:runtime-orientation",
