@@ -191,6 +191,47 @@ void test_capture_and_scanout_contract()
 	CHECK( !normal.rotateBeforeStaging );
 }
 
+void test_output_ring_rebuild_matrix()
+{
+	constexpr std::array transforms = {
+		Transform::Normal,
+		Transform::Rotate90,
+		Transform::Rotate180,
+		Transform::Rotate270,
+	};
+	constexpr std::array nativeExtents = {
+		Extent{ 800, 1280 },
+		Extent{ 1024, 1024 },
+	};
+
+	for ( const Extent nativeExtent : nativeExtents )
+	{
+		for ( const Transform currentPhysical : transforms )
+		{
+			const Extent currentLogical = transformExtent( nativeExtent, currentPhysical );
+			const OutputRingState current = requiredOutputRingState(
+				currentLogical, currentPhysical, currentPhysical != Transform::Normal );
+			CHECK( !outputRingNeedsRebuild( current, current ) );
+
+			for ( const Transform nextPhysical : transforms )
+			{
+				const Extent nextLogical = transformExtent( nativeExtent, nextPhysical );
+				const OutputRingState required = requiredOutputRingState(
+					nextLogical, nextPhysical, nextPhysical != Transform::Normal );
+				CHECK( outputRingNeedsRebuild( current, required ) ==
+					( currentPhysical != nextPhysical ) );
+
+				const OutputRingState hardwareCurrent = requiredOutputRingState(
+					currentLogical, currentPhysical, false );
+				const OutputRingState hardwareRequired = requiredOutputRingState(
+					nextLogical, nextPhysical, false );
+				CHECK( outputRingNeedsRebuild( hardwareCurrent, hardwareRequired ) ==
+					( currentLogical != nextLogical ) );
+			}
+		}
+	}
+}
+
 ClientTransform matchingClientTransform( Transform transform )
 {
 	switch ( transform )
@@ -513,6 +554,7 @@ int main()
 	test_asymmetric_pixels_and_inverse_mappings();
 	test_layout_stride_damage_cursor_and_overlay_coordinates();
 	test_capture_and_scanout_contract();
+	test_output_ring_rebuild_matrix();
 	test_native_base_and_system_overlay_plane_records();
 	test_client_transform_proof();
 	test_native_plane_policy_fails_closed();
