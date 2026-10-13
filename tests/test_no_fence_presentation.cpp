@@ -116,6 +116,13 @@ struct Scratch
 
 void fencedControl()
 {
+	using gamescope::commit_fence::Action;
+	check( gamescope::commit_fence::requiresPostEnqueueNudge( Action::Ready ),
+		"a ready no-fence commit must wake presentation after enqueue" );
+	check( !gamescope::commit_fence::requiresPostEnqueueNudge( Action::Wait ) &&
+		!gamescope::commit_fence::requiresPostEnqueueNudge( Action::Error ),
+		"only the ready path needs the post-enqueue wake" );
+
 	const int fence = eventfd( 0, EFD_CLOEXEC | EFD_NONBLOCK );
 	check( fence >= 0, "create fenced control eventfd" );
 	const auto result = gamescope::commit_fence::waitForFd( fence );
@@ -411,7 +418,7 @@ int runParent( const char *self, const char *gamescope, const char *reaper )
 			reaperPath.substr( 0, separator ) + ":/usr/bin:/bin";
 		setenv( "PATH", path.c_str(), 1 );
 		execl( gamescope, gamescope, "--backend", "headless", "--expose-wayland",
-			"-W", "64", "-H", "64", "-r", "1", "--mangoapp", "--keep-alive", "--",
+			"-W", "64", "-H", "64", "-r", "60", "--mangoapp", "--keep-alive", "--",
 			"/usr/bin/sleep", "60", static_cast<char *>( nullptr ) );
 		_exit( 127 );
 	}
