@@ -150,6 +150,8 @@ static gamescope::output_rotation::ClientTransform normalize_wayland_buffer_tran
 			return ClientTransform::Normal;
 		case WL_OUTPUT_TRANSFORM_90:
 			return ClientTransform::Rotate90;
+		case WL_OUTPUT_TRANSFORM_180:
+			return ClientTransform::Rotate180;
 		case WL_OUTPUT_TRANSFORM_270:
 			return ClientTransform::Rotate270;
 		default:
@@ -170,6 +172,8 @@ static gamescope::output_rotation::ClientTransform normalize_vulkan_pre_transfor
 			return ClientTransform::Normal;
 		case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:
 			return ClientTransform::Rotate90;
+		case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR:
+			return ClientTransform::Rotate180;
 		case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR:
 			return ClientTransform::Rotate270;
 		default:

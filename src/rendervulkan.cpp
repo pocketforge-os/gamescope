@@ -4089,7 +4089,8 @@ static uint32_t client_buffer_transform_code( const FrameInfo_t::Layer_t &layer 
 	switch ( transform )
 	{
 		case ClientTransform::Rotate90: return 1;
-		case ClientTransform::Rotate270: return 2;
+		case ClientTransform::Rotate180: return 2;
+		case ClientTransform::Rotate270: return 3;
 		default: return 0;
 	}
 }
@@ -4225,7 +4226,8 @@ struct OutputRotateData_t
 };
 
 static_assert( uint32_t( gamescope::output_rotation::Transform::Rotate90 ) == 1 );
-static_assert( uint32_t( gamescope::output_rotation::Transform::Rotate270 ) == 2 );
+static_assert( uint32_t( gamescope::output_rotation::Transform::Rotate180 ) == 2 );
+static_assert( uint32_t( gamescope::output_rotation::Transform::Rotate270 ) == 3 );
 
 struct uvec4_t
 {

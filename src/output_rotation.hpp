@@ -15,6 +15,7 @@ enum class Transform : uint32_t
 {
 	Normal,
 	Rotate90,
+	Rotate180,
 	Rotate270,
 };
 
@@ -56,6 +57,7 @@ struct Layout
 };
 
 Extent transformExtent( Extent logicalExtent, Transform transform );
+Transform compose( Transform first, Transform next );
 Transform transformFromPanelOrientation( GamescopePanelOrientation orientation );
 std::optional<Layout> makeLayout( Extent logicalExtent, Transform transform,
 	uint32_t bytesPerPixel, uint32_t rowPitchAlignment );
@@ -120,13 +122,14 @@ enum class ClientClass
 };
 
 // A geometric transform declared by the client for the committed buffer. The
-// value names the physical pre-rotation of logical content; flipped and 180
-// degree declarations are normalized to Unsupported by the protocol adapters.
+// value names the physical pre-rotation of logical content; flipped
+// declarations are normalized to Unsupported by the protocol adapters.
 enum class ClientTransform
 {
 	Unknown,
 	Normal,
 	Rotate90,
+	Rotate180,
 	Rotate270,
 	Unsupported,
 };

@@ -14,8 +14,6 @@ namespace
 
 constexpr uint32_t kLogicalWidth = 1280;
 constexpr uint32_t kLogicalHeight = 720;
-constexpr uint32_t kNativeWidth = kLogicalHeight;
-constexpr uint32_t kNativeHeight = kLogicalWidth;
 constexpr uint32_t kSamplerSlots = 16;
 
 uint32_t sourcePixel( uint32_t x, uint32_t y )
@@ -457,7 +455,8 @@ bool makePipeline( Context &context, Image &source, Image &rotated, Buffer &unif
 }
 
 bool recordAndSubmit( Context &context, Image &source, Image &rotated, Image &scanout,
-	Pipeline &pipeline, VkDescriptorSet descriptorSet )
+	Pipeline &pipeline, VkDescriptorSet descriptorSet, uint32_t nativeWidth,
+	uint32_t nativeHeight )
 {
 	Commands commands{ .context = &context };
 	const VkCommandPoolCreateInfo poolInfo = {
@@ -523,8 +522,8 @@ bool recordAndSubmit( Context &context, Image &source, Image &rotated, Image &sc
 	vkCmdBindPipeline( commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline );
 	vkCmdBindDescriptorSets( commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 		pipeline.pipelineLayout, 0, 1, &descriptorSet, 0, nullptr );
-	vkCmdDispatch( commandBuffer, ( kNativeWidth + 7 ) / 8,
-		( kNativeHeight + 7 ) / 8, 1 );
+	vkCmdDispatch( commandBuffer, ( nativeWidth + 7 ) / 8,
+		( nativeHeight + 7 ) / 8, 1 );
 
 	const VkImageMemoryBarrier rotationBarrier = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -542,7 +541,7 @@ bool recordAndSubmit( Context &context, Image &source, Image &rotated, Image &sc
 	const VkImageCopy copy = {
 		.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
 		.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-		.extent = { kNativeWidth, kNativeHeight, 1 },
+		.extent = { nativeWidth, nativeHeight, 1 },
 	};
 	vkCmdCopyImage( commandBuffer, rotated.image, VK_IMAGE_LAYOUT_GENERAL,
 		scanout.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy );
@@ -574,9 +573,10 @@ bool recordAndSubmit( Context &context, Image &source, Image &rotated, Image &sc
 		vkWaitForFences( context.device, 1, &commands.fence, VK_TRUE, UINT64_MAX ) == VK_SUCCESS;
 }
 
-bool checkScanout( Context &context, Image &scanout, uint32_t transform )
+bool checkScanout( Context &context, Image &scanout, uint32_t transform,
+	uint32_t nativeWidth, uint32_t nativeHeight )
 {
-	if ( scanout.layout.rowPitch < kNativeWidth * sizeof( uint32_t ) )
+	if ( scanout.layout.rowPitch < nativeWidth * sizeof( uint32_t ) )
 		return false;
 	void *mapped = nullptr;
 	if ( vkMapMemory( context.device, scanout.memory, 0, VK_WHOLE_SIZE, 0, &mapped ) != VK_SUCCESS )
@@ -588,15 +588,30 @@ bool checkScanout( Context &context, Image &scanout, uint32_t transform )
 		.size = VK_WHOLE_SIZE,
 	};
 	bool matches = vkInvalidateMappedMemoryRanges( context.device, 1, &range ) == VK_SUCCESS;
-	for ( uint32_t y = 0; matches && y < kNativeHeight; y++ )
+	for ( uint32_t y = 0; matches && y < nativeHeight; y++ )
 	{
 		const uint32_t *row = reinterpret_cast<const uint32_t *>(
 			static_cast<const uint8_t *>( mapped ) +
 			scanout.layout.offset + y * scanout.layout.rowPitch );
-		for ( uint32_t x = 0; matches && x < kNativeWidth; x++ )
+		for ( uint32_t x = 0; matches && x < nativeWidth; x++ )
 		{
-			const uint32_t logicalX = transform == 1 ? y : kLogicalWidth - 1 - y;
-			const uint32_t logicalY = transform == 1 ? kLogicalHeight - 1 - x : x;
+			uint32_t logicalX = x;
+			uint32_t logicalY = y;
+			switch ( transform )
+			{
+				case 1:
+					logicalX = y;
+					logicalY = kLogicalHeight - 1 - x;
+					break;
+				case 2:
+					logicalX = kLogicalWidth - 1 - x;
+					logicalY = kLogicalHeight - 1 - y;
+					break;
+				case 3:
+					logicalX = kLogicalWidth - 1 - y;
+					logicalY = x;
+					break;
+			}
 			matches = row[x] == sourcePixel( logicalX, logicalY );
 		}
 	}
@@ -606,16 +621,19 @@ bool checkScanout( Context &context, Image &scanout, uint32_t transform )
 
 bool runTransform( Context &context, uint32_t transform )
 {
+	const bool swapsAxes = transform == 1 || transform == 3;
+	const uint32_t nativeWidth = swapsAxes ? kLogicalHeight : kLogicalWidth;
+	const uint32_t nativeHeight = swapsAxes ? kLogicalWidth : kLogicalHeight;
 	Image source;
 	Image rotated;
 	Image scanout;
 	Buffer uniform;
 	if ( !makeImage( context, kLogicalWidth, kLogicalHeight, VK_IMAGE_TILING_LINEAR,
 			VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &source ) ||
-		!makeImage( context, kNativeWidth, kNativeHeight, VK_IMAGE_TILING_OPTIMAL,
+		!makeImage( context, nativeWidth, nativeHeight, VK_IMAGE_TILING_OPTIMAL,
 			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rotated ) ||
-		!makeImage( context, kNativeWidth, kNativeHeight, VK_IMAGE_TILING_LINEAR,
+		!makeImage( context, nativeWidth, nativeHeight, VK_IMAGE_TILING_LINEAR,
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &scanout ) ||
 		!makeUniformBuffer( context, &uniform ) ||
 		!writeSourceImage( context, source ) ||
@@ -625,9 +643,10 @@ bool runTransform( Context &context, uint32_t transform )
 	Pipeline pipeline;
 	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 	if ( !makePipeline( context, source, rotated, uniform, &pipeline, &descriptorSet ) ||
-		!recordAndSubmit( context, source, rotated, scanout, pipeline, descriptorSet ) )
+		!recordAndSubmit( context, source, rotated, scanout, pipeline, descriptorSet,
+			nativeWidth, nativeHeight ) )
 		return false;
-	return checkScanout( context, scanout, transform );
+	return checkScanout( context, scanout, transform, nativeWidth, nativeHeight );
 }
 
 } // namespace
@@ -655,6 +674,11 @@ int main()
 		return 77;
 	}
 
+	if ( !runTransform( context, 0 ) )
+	{
+		std::fprintf( stderr, "FAIL: Normal shader/staging output mismatch\n" );
+		return 1;
+	}
 	if ( !runTransform( context, 1 ) )
 	{
 		std::fprintf( stderr, "FAIL: Rotate90 shader/staging output mismatch\n" );
@@ -662,12 +686,17 @@ int main()
 	}
 	if ( !runTransform( context, 2 ) )
 	{
+		std::fprintf( stderr, "FAIL: Rotate180 shader/staging output mismatch\n" );
+		return 1;
+	}
+	if ( !runTransform( context, 3 ) )
+	{
 		std::fprintf( stderr, "FAIL: Rotate270 shader/staging output mismatch\n" );
 		return 1;
 	}
 
 	std::fprintf( stderr,
-		"PASS: %s pixel-correct 1280x720 to 720x1280 90/270 rotation and linear staging\n",
+		"PASS: %s pixel-correct 1280x720 0/90/180/270 rotation and linear staging\n",
 		context.properties.deviceName );
 	return 0;
 }
