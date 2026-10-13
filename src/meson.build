@@ -23,6 +23,7 @@ sdl2_dep = dependency('SDL2', required: get_option('sdl2_backend'))
 avif_dep = dependency('libavif', version: '>=1.0.0', required: get_option('avif_screenshots'))
 pixman_dep = dependency('pixman-1')
 udev_dep = dependency('libudev')
+json_c_dep = dependency('json-c')
 
 wlroots_dep = dependency(
   'wlroots-0.19',
@@ -120,6 +121,7 @@ src = [
   'drm_device_selection.cpp',
   'output_staging.cpp',
   'output_rotation.cpp',
+	'runtime_orientation.cpp',
   'log.cpp',
   'ime.cpp',
   'input_protocols.cpp',
@@ -209,6 +211,7 @@ gamescope_version = configure_file(
       vulkan_dep, liftoff_dep, dep_xtst, dep_xmu, cap_dep, epoll_dep, pipewire_dep, librt_dep,
       stb_dep, displayinfo_dep, openvr_dep, dep_xcursor, avif_dep, dep_xi,
       libdecor_dep, eis_dep, luajit_dep, libinput_dep, pixman_dep, udev_dep,
+	  json_c_dep,
     ],
     install: true,
     cpp_args: gamescope_cpp_args,

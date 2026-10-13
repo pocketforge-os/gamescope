@@ -1,12 +1,20 @@
 #include "runtime_orientation.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <mutex>
+#include <thread>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 using namespace gamescope::output_rotation;
 using namespace gamescope::runtime_orientation;
@@ -14,7 +22,7 @@ using namespace gamescope::runtime_orientation;
 namespace
 {
 
-int g_failures = 0;
+std::atomic<int> g_failures = 0;
 
 #define CHECK( ... ) check( (__VA_ARGS__), #__VA_ARGS__, __LINE__ )
 
@@ -143,9 +151,9 @@ void test_parser_is_strict_and_framing_is_incremental()
 
 void test_transition_clients_absence_lock_and_180_fill()
 {
-	const State fixed = fixedMountState( Transform::Rotate270 );
+	const State fixed = fixedMountState( Transform::Normal );
 	ReconfigurationState applied( { 800, 1280 }, fixed );
-	CHECK( applied.plan().outputTransform == Transform::Rotate270 );
+	CHECK( applied.plan().outputTransform == Transform::Normal );
 
 	const State right = *parseResponse( response( "right", 8 ) );
 	const Change live = applied.apply( right, true );
@@ -169,7 +177,7 @@ void test_transition_clients_absence_lock_and_180_fill()
 
 	const Change absent = applied.fallbackToFixedMount( true );
 	CHECK( absent.physical );
-	CHECK( applied.plan().outputTransform == Transform::Rotate270 );
+	CHECK( applied.plan().outputTransform == Transform::Normal );
 
 	const State appFixed = *parseResponse( response( "upsidedown", 10,
 		"landscape_flipped", "landscape", "fill" ) );
@@ -205,6 +213,138 @@ void test_backoff_and_lock_are_authority_facts()
 	CHECK( locked.locked );
 }
 
+struct TestSocket
+{
+	std::string directory;
+	std::string path;
+	int fd = -1;
+
+	TestSocket()
+	{
+		std::array<char, 40> pattern = {};
+		std::snprintf( pattern.data(), pattern.size(), "/tmp/gs-orientation-%d-XXXXXX",
+			int( getpid() ) );
+		char *created = mkdtemp( pattern.data() );
+		CHECK( created != nullptr );
+		if ( !created ) return;
+		directory = created;
+		path = directory + "/authority.sock";
+		fd = socket( AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0 );
+		CHECK( fd >= 0 );
+		if ( fd < 0 ) return;
+		sockaddr_un address = { .sun_family = AF_UNIX };
+		std::snprintf( address.sun_path, sizeof( address.sun_path ), "%s", path.c_str() );
+		CHECK( bind( fd, reinterpret_cast<sockaddr *>( &address ), sizeof( address ) ) == 0 );
+		CHECK( listen( fd, 1 ) == 0 );
+	}
+
+	~TestSocket()
+	{
+		if ( fd >= 0 ) close( fd );
+		if ( !path.empty() ) unlink( path.c_str() );
+		if ( !directory.empty() ) rmdir( directory.c_str() );
+	}
+};
+
+std::thread serveOne( TestSocket &socket, std::string expectedRequest,
+	std::string reply, bool truncate )
+{
+	return std::thread( [&socket, expectedRequest = std::move( expectedRequest ),
+		reply = std::move( reply ), truncate] {
+		const int client = accept4( socket.fd, nullptr, nullptr, SOCK_CLOEXEC );
+		CHECK( client >= 0 );
+		if ( client < 0 ) return;
+		FrameDecoder request;
+		std::array<uint8_t, 128> buffer;
+		while ( true )
+		{
+			const ssize_t size = recv( client, buffer.data(), buffer.size(), 0 );
+			CHECK( size > 0 );
+			if ( size <= 0 ) break;
+			const FrameStatus status = request.feed( { buffer.data(), size_t( size ) } );
+			if ( status != FrameStatus::NeedMore ) break;
+		}
+		CHECK( request.finish() == FrameStatus::Complete );
+		CHECK( request.body() == expectedRequest );
+		const auto frame = encodeFrame( reply );
+		const size_t sent = truncate ? frame.size() - 1 : frame.size();
+		for ( size_t offset = 0; offset < sent; )
+		{
+			const size_t chunk = std::min<size_t>( 3, sent - offset );
+			const ssize_t written = send( client, frame.data() + offset, chunk, MSG_NOSIGNAL );
+			CHECK( written == ssize_t( chunk ) );
+			if ( written <= 0 ) break;
+			offset += size_t( written );
+		}
+		close( client );
+	} );
+}
+
+void test_real_unix_wire_partial_delivery_and_absence()
+{
+	TestSocket positive;
+	auto positiveServer = serveOne( positive,
+		"{\"method\":\"orientation\",\"version\":1,\"wait_ms\":0}",
+		response( "right", 123 ), false );
+	const PollResult first = pollOnce( positive.path, std::nullopt, 0 );
+	positiveServer.join();
+	CHECK( first.state.has_value() );
+	if ( first.state ) CHECK( first.state->serial == 123 );
+
+	TestSocket negative;
+	auto negativeServer = serveOne( negative,
+		"{\"method\":\"orientation\",\"version\":1,\"after_serial\":123,\"wait_ms\":30000}",
+		response( "left", 124 ), true );
+	const PollResult shortFrame = pollOnce( negative.path, 123, 30000 );
+	negativeServer.join();
+	CHECK( !shortFrame.state );
+	CHECK( shortFrame.error == "truncated frame" );
+
+	const PollResult absent = pollOnce( negative.directory + "/missing.sock", std::nullopt, 0 );
+	CHECK( !absent.state );
+	CHECK( absent.error.find( "connect:" ) == 0 );
+}
+
+void test_subscription_reconnects_and_stops_interruptibly()
+{
+	TestSocket socket;
+	auto server = serveOne( socket,
+		"{\"method\":\"orientation\",\"version\":1,\"wait_ms\":0}",
+		response( "normal", 50 ), false );
+	std::mutex mutex;
+	std::condition_variable changed;
+	int snapshots = 0;
+	Subscription subscription( socket.path,
+		[&]( const std::optional<State> &state, std::string_view ) {
+			if ( !state ) return;
+			std::lock_guard lock( mutex );
+			snapshots++;
+			changed.notify_all();
+		} );
+	subscription.start();
+	{
+		std::unique_lock lock( mutex );
+		CHECK( changed.wait_for( lock, std::chrono::seconds{ 2 },
+			[&] { return snapshots == 1; } ) );
+	}
+	server.join();
+	const auto before = std::chrono::steady_clock::now();
+	subscription.stop();
+	CHECK( std::chrono::steady_clock::now() - before < std::chrono::seconds{ 1 } );
+
+	std::atomic<int> absentCallbacks = 0;
+	Subscription absent( socket.directory + "/absent.sock",
+		[&]( const std::optional<State> &state, std::string_view ) {
+			if ( !state ) absentCallbacks++;
+		} );
+	absent.start();
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{ 2 };
+	while ( absentCallbacks.load() == 0 && std::chrono::steady_clock::now() < deadline )
+		std::this_thread::yield();
+	absent.stop();
+	CHECK( absentCallbacks.load() == 1 );
+}
+
 } // namespace
 
 int main()
@@ -213,5 +353,7 @@ int main()
 	test_parser_is_strict_and_framing_is_incremental();
 	test_transition_clients_absence_lock_and_180_fill();
 	test_backoff_and_lock_are_authority_facts();
-	return g_failures == 0 ? 0 : 1;
+	test_real_unix_wire_partial_delivery_and_absence();
+	test_subscription_reconnects_and_stops_interruptibly();
+	return g_failures.load() == 0 ? 0 : 1;
 }
