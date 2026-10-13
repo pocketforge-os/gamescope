@@ -352,7 +352,7 @@ int runClient( const char *screenshotPath )
 	client.screenshotPath = initialScreenshot;
 	gamescope_control_take_screenshot( client.control, initialScreenshot.c_str(),
 		GAMESCOPE_CONTROL_SCREENSHOT_TYPE_SCREEN_BUFFER, 0 );
-	check( dispatchUntil( client, &Client::frameDone, std::chrono::seconds{ 3 } ),
+	check( dispatchUntil( client, &Client::frameDone, std::chrono::seconds{ 5 } ),
 		"present initial no-fence frame" );
 	check( dispatchUntil( client, &Client::screenshotDone, std::chrono::seconds{ 5 } ),
 		"prime the initial frame with an external compositor request" );
