@@ -34,6 +34,8 @@ namespace
 
 constexpr int kWidth = 64;
 constexpr int kHeight = 64;
+constexpr int kToolkitWidth = 668;
+constexpr int kToolkitHeight = 509;
 std::string g_resultPath;
 bool g_holdAfterResult = false;
 
@@ -302,21 +304,27 @@ void bufferRelease( void *data, wl_buffer * )
 
 const wl_buffer_listener bufferListener = { .release = bufferRelease };
 
-Buffer makeBuffer( Client &client, uint32_t color )
+Buffer makeBufferSized( Client &client, int width, int height, uint32_t color,
+	uint32_t format = WL_SHM_FORMAT_XRGB8888 )
 {
 	Buffer result;
 	result.fd = memfd_create( "gamescope-no-fence-frame", MFD_CLOEXEC );
 	check( result.fd >= 0, "create wl_shm memfd" );
-	result.size = kWidth * kHeight * 4;
+	result.size = size_t( width ) * height * 4;
 	check( ftruncate( result.fd, off_t( result.size ) ) == 0, "size wl_shm memfd" );
 	result.pixels = mmap( nullptr, result.size, PROT_READ | PROT_WRITE, MAP_SHARED, result.fd, 0 );
 	check( result.pixels != MAP_FAILED, "map wl_shm memfd" );
-	std::fill_n( static_cast<uint32_t *>( result.pixels ), kWidth * kHeight, color );
+	std::fill_n( static_cast<uint32_t *>( result.pixels ), size_t( width ) * height, color );
 	result.pool = wl_shm_create_pool( client.shm, result.fd, int( result.size ) );
-	result.buffer = wl_shm_pool_create_buffer( result.pool, 0, kWidth, kHeight,
-		kWidth * 4, WL_SHM_FORMAT_XRGB8888 );
+	result.buffer = wl_shm_pool_create_buffer( result.pool, 0, width, height,
+		width * 4, format );
 	check( result.pool && result.buffer, "create wl_shm buffer" );
 	return result;
+}
+
+Buffer makeBuffer( Client &client, uint32_t color )
+{
+	return makeBufferSized( client, kWidth, kHeight, color );
 }
 
 Buffer makeRgb565Buffer( Client &client, uint16_t color )
@@ -506,6 +514,121 @@ bool runBurstCase( Client &client, const char *screenshotPath )
 	return captureShowsBlue( client, screenshotPath, false );
 }
 
+bool captureShowsToolkitBlue( Client &client, const char *screenshotPath )
+{
+	client.screenshotDone = false;
+	client.screenshotPath = screenshotPath;
+	gamescope_control_take_screenshot( client.control, screenshotPath,
+		GAMESCOPE_CONTROL_SCREENSHOT_TYPE_SCREEN_BUFFER, 0 );
+	check( dispatchUntil( client, &Client::screenshotDone, std::chrono::seconds{ 5 } ),
+		"capture the scaled toolkit screen buffer" );
+
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+	unsigned char *pixels = stbi_load( screenshotPath, &width, &height, &channels, 4 );
+	check( pixels && width == 1280 && height == 720,
+		"decode the 1280x720 scaled toolkit frame" );
+	size_t bluePixels = 0;
+	for ( int y = 0; y < height; y++ )
+	{
+		for ( int x = 0; x < width; x++ )
+		{
+			const unsigned char *pixel = pixels + ( size_t( y ) * width + x ) * 4;
+			if ( pixel[0] < 64 && pixel[1] < 64 && pixel[2] > 192 )
+				bluePixels++;
+		}
+	}
+	stbi_image_free( pixels );
+	unlink( screenshotPath );
+	return bluePixels >= 100;
+}
+
+bool runToolkitDamageCase( Client &client, const char *screenshotPath,
+	DamageCoordinates coordinates )
+{
+	Buffer buffers[] = {
+		makeBufferSized( client, kToolkitWidth, kToolkitHeight, 0xffff0000u,
+			WL_SHM_FORMAT_ARGB8888 ),
+		makeBufferSized( client, kToolkitWidth, kToolkitHeight, 0xffff0000u,
+			WL_SHM_FORMAT_ARGB8888 ),
+	};
+	armBuffer( buffers[0] );
+	armBuffer( buffers[1] );
+	// GTK 4's client-side decorations make a 668x509 scale-1 buffer for its
+	// 640x480 logical window. It does not use wp_viewport for this path.
+	xdg_surface_set_window_geometry( client.xdgSurface, 14, 14, 640, 480 );
+
+	constexpr int commitCount = 13;
+	constexpr int glyphWidth = 10;
+	constexpr int glyphHeight = 16;
+	constexpr int glyphY = 263;
+	for ( int frame = 0; frame < commitCount; frame++ )
+	{
+		Buffer &buffer = buffers[frame % 2];
+		if ( !buffer.released )
+			check( dispatchUntilFlag( client, buffer.released, std::chrono::seconds{ 5 } ),
+				"toolkit buffer was not released for reuse" );
+
+		const int glyphX = 23 + frame * 12;
+		uint32_t *pixels = static_cast<uint32_t *>( buffer.pixels );
+		for ( int glyph = 0; glyph <= frame; glyph++ )
+		{
+			const int paintedX = 23 + glyph * 12;
+			const uint32_t color = glyph == commitCount - 1
+				? 0xff0000ffu : 0xff00ff00u;
+			for ( int y = glyphY; y < glyphY + glyphHeight; y++ )
+				std::fill_n( pixels + y * kToolkitWidth + paintedX, glyphWidth, color );
+		}
+
+		client.frameDone = false;
+		buffer.released = false;
+		wl_surface_attach( client.surface, buffer.buffer, 0, 0 );
+		if ( coordinates == DamageCoordinates::Buffer )
+			wl_surface_damage_buffer( client.surface, glyphX, glyphY, glyphWidth, glyphHeight );
+		else
+			wl_surface_damage( client.surface, glyphX, glyphY, glyphWidth, glyphHeight );
+		wl_surface_commit( client.surface );
+		check( wl_display_flush( client.display ) >= 0 || errno == EAGAIN,
+			"flush toolkit partial-damage commit" );
+		usleep( 50'000 );
+	}
+
+	// GTK queues cursor-only redraws after text insertion. The other pool
+	// buffer contains the final glyph, but its current damage is only the
+	// advancing 1x16 cursor. A compositor-side cache therefore needs all
+	// surface damage accumulated since this buffer was last uploaded.
+	Buffer &tail = buffers[1];
+	if ( !tail.released )
+		check( dispatchUntilFlag( client, tail.released, std::chrono::seconds{ 5 } ),
+			"toolkit tail buffer was not released for reuse" );
+	uint32_t *tailPixels = static_cast<uint32_t *>( tail.pixels );
+	const int finalGlyphX = 23 + ( commitCount - 1 ) * 12;
+	for ( int y = glyphY; y < glyphY + glyphHeight; y++ )
+		std::fill_n( tailPixels + y * kToolkitWidth + finalGlyphX,
+			glyphWidth, 0xff0000ffu );
+	const int cursorX = 23 + commitCount * 12;
+	for ( int y = glyphY; y < glyphY + glyphHeight; y++ )
+		tailPixels[y * kToolkitWidth + cursorX] = 0xffffffffu;
+
+	client.frameDone = false;
+	tail.released = false;
+	wl_surface_attach( client.surface, tail.buffer, 0, 0 );
+	if ( coordinates == DamageCoordinates::Buffer )
+		wl_surface_damage_buffer( client.surface, cursorX, glyphY, 1, glyphHeight );
+	else
+		wl_surface_damage( client.surface, cursorX, glyphY, 1, glyphHeight );
+	wl_callback *callback = wl_surface_frame( client.surface );
+	wl_callback_add_listener( callback, &frameListener, &client );
+	wl_surface_commit( client.surface );
+	check( wl_display_flush( client.display ) >= 0 || errno == EAGAIN,
+		"flush toolkit cursor-damage commit" );
+
+	check( dispatchUntil( client, &Client::frameDone, std::chrono::milliseconds{ 750 } ),
+		"last toolkit partial-damage commit stayed unpresented" );
+	return captureShowsToolkitBlue( client, screenshotPath );
+}
+
 int runClient( const char *screenshotPath )
 {
 	Client client;
@@ -529,6 +652,24 @@ int runClient( const char *screenshotPath )
 	wl_surface_commit( client.surface );
 	check( dispatchUntil( client, &Client::configured, std::chrono::seconds{ 3 } ),
 		"receive initial xdg-shell configure" );
+	if ( std::getenv( "GS_NO_FENCE_TOOLKIT" ) )
+	{
+		bool passed = true;
+		for ( DamageCoordinates coordinates :
+			{ DamageCoordinates::Surface, DamageCoordinates::Buffer } )
+		{
+			const bool casePassed = runToolkitDamageCase( client, screenshotPath, coordinates );
+			if ( !casePassed )
+				std::fprintf( stderr,
+					"no-fence-presentation: scaled toolkit last glyph missing (%s)\n",
+					coordinates == DamageCoordinates::Buffer ? "damage_buffer" : "damage" );
+			passed = passed && casePassed;
+		}
+		check( passed, "scaled toolkit partial damage lost its last glyph" );
+		writeResult( "PASS\n" );
+		while ( g_holdAfterResult ) pause();
+		return 0;
+	}
 
 	Buffer initial = makeBuffer( client, 0x00ff0000u );
 	armBuffer( initial );
@@ -591,9 +732,9 @@ int runClient( const char *screenshotPath )
 	return 0;
 }
 
-int runParent( const char *self, const char *gamescope, const char *reaper )
+int runParent( const char *self, const char *gamescope, const char *reaper, bool toolkit )
 {
-	fencedControl();
+	if ( !toolkit ) fencedControl();
 	Scratch scratch;
 	check( !scratch.directory.empty() && !scratch.xwaylandWrapper.empty(),
 		"create fixture scratch directory" );
@@ -607,6 +748,7 @@ int runParent( const char *self, const char *gamescope, const char *reaper )
 		setenv( "WLR_XWAYLAND", scratch.xwaylandWrapper.c_str(), 1 );
 		setenv( "GS_NO_FENCE_SCREENSHOT", scratch.screenshot.c_str(), 1 );
 		setenv( "GS_NO_FENCE_RESULT", scratch.result.c_str(), 1 );
+		if ( toolkit ) setenv( "GS_NO_FENCE_TOOLKIT", "1", 1 );
 		const std::string reaperPath = reaper;
 		const size_t separator = reaperPath.find_last_of( '/' );
 		if ( separator == std::string::npos ) _exit( 126 );
@@ -614,7 +756,8 @@ int runParent( const char *self, const char *gamescope, const char *reaper )
 			reaperPath.substr( 0, separator ) + ":/usr/bin:/bin";
 		setenv( "PATH", path.c_str(), 1 );
 		execl( gamescope, gamescope, "--backend", "headless", "--expose-wayland",
-			"-W", "64", "-H", "64", "-r", "60", "--mangoapp", "--keep-alive", "--",
+			"-W", toolkit ? "1280" : "64", "-H", toolkit ? "720" : "64",
+			"-r", "60", "--mangoapp", "--keep-alive", "--",
 			"/usr/bin/sleep", "60", static_cast<char *>( nullptr ) );
 		_exit( 127 );
 	}
@@ -674,5 +817,7 @@ int main( int argc, char **argv )
 	const ssize_t size = readlink( "/proc/self/exe", self.data(), self.size() - 1 );
 	check( size > 0, "resolve test executable" );
 	self[size] = '\0';
-	return runParent( self.data(), argv[1], argv[2] );
+	const int regular = runParent( self.data(), argv[1], argv[2], false );
+	if ( regular != 0 ) return regular;
+	return runParent( self.data(), argv[1], argv[2], true );
 }
