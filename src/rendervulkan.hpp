@@ -423,6 +423,8 @@ void vulkan_stop_pipeline_compiler();
 gamescope::OwningRc<CVulkanTexture> vulkan_create_texture_from_dmabuf( struct wlr_dmabuf_attributes *pDMA, gamescope::OwningRc<gamescope::IBackendFb> pBackendFb );
 gamescope::OwningRc<CVulkanTexture> vulkan_create_texture_from_bits( uint32_t width, uint32_t height, uint32_t contentWidth, uint32_t contentHeight, uint32_t drmFormat, CVulkanTexture::createFlags texCreateFlags, void *bits );
 gamescope::OwningRc<CVulkanTexture> vulkan_create_texture_from_wlr_buffer( struct wlr_buffer *buf, gamescope::OwningRc<gamescope::IBackendFb> pBackendFb );
+bool vulkan_update_texture_from_wlr_buffer( struct wlr_buffer *buf,
+	gamescope::Rc<CVulkanTexture> texture, std::span<const pixman_box32_t> damage );
 
 std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamescope::Rc<CVulkanTexture> pScreenshotTexture, bool partial, gamescope::Rc<CVulkanTexture> pOutputOverride = nullptr, bool increment = true, std::unique_ptr<CVulkanCmdBuffer> pInCommandBuffer = nullptr );
 void vulkan_wait( uint64_t ulSeqNo, bool bReset );
@@ -978,6 +980,8 @@ public:
 	void dispatch(uint32_t x, uint32_t y = 1, uint32_t z = 1);
 	void copyImage(gamescope::Rc<CVulkanTexture> src, gamescope::Rc<CVulkanTexture> dst);
 	void copyBufferToImage(VkBuffer buffer, VkDeviceSize offset, uint32_t stride, gamescope::Rc<CVulkanTexture> dst);
+	void copyBufferToImage(VkBuffer buffer, gamescope::Rc<CVulkanTexture> dst,
+		std::span<const VkBufferImageCopy> regions);
 
 
 	void prepareSrcImage(CVulkanTexture *image);

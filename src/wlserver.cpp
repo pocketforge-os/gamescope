@@ -268,6 +268,15 @@ std::optional<ResListEntry_t> PrepareCommit( struct wlr_surface *surf, struct wl
 		std::move(wl_surf->pending_presentation_feedbacks),
 		wl_surf->present_id,
 		wl_surf->desired_present_time,
+		[&surf]
+		{
+			int count = 0;
+			const pixman_box32_t *rectangles =
+				pixman_region32_rectangles( &surf->buffer_damage, &count );
+			if ( count == 0 )
+				return std::vector<pixman_box32_t>{};
+			return std::vector<pixman_box32_t>{ rectangles, rectangles + count };
+		}(),
 		std::move( pAcquirePoint ),
 		std::move( pReleasePoint )
 	};

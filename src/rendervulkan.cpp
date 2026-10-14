@@ -1929,8 +1929,6 @@ void CVulkanCmdBuffer::copyImage(gamescope::Rc<CVulkanTexture> src, gamescope::R
 
 void CVulkanCmdBuffer::copyBufferToImage(VkBuffer buffer, VkDeviceSize offset, uint32_t stride, gamescope::Rc<CVulkanTexture> dst)
 {
-	prepareDestImage(dst.get());
-	insertBarrier();
 	VkBufferImageCopy region = {
 		.bufferOffset = offset,
 		.bufferRowLength = stride,
@@ -1944,8 +1942,17 @@ void CVulkanCmdBuffer::copyBufferToImage(VkBuffer buffer, VkDeviceSize offset, u
 			.depth = dst->depth(),
 		},
 	};
+	copyBufferToImage( buffer, std::move( dst ), std::span{ &region, 1 } );
+}
 
-	m_device->vk.CmdCopyBufferToImage(m_cmdBuffer, buffer, dst->vkImage(), VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+void CVulkanCmdBuffer::copyBufferToImage(VkBuffer buffer, gamescope::Rc<CVulkanTexture> dst,
+	std::span<const VkBufferImageCopy> regions)
+{
+	prepareDestImage(dst.get());
+	insertBarrier();
+
+	m_device->vk.CmdCopyBufferToImage(m_cmdBuffer, buffer, dst->vkImage(),
+		VK_IMAGE_LAYOUT_GENERAL, regions.size(), regions.data());
 
 	markDirty(dst.get());
 
@@ -4970,4 +4977,160 @@ gamescope::OwningRc<CVulkanTexture> vulkan_create_texture_from_wlr_buffer( struc
 	g_device.vk.FreeMemory(g_device.device(), bufferMemory, nullptr);
 
 	return pTex;
+}
+
+bool vulkan_update_texture_from_wlr_buffer( struct wlr_buffer *buf,
+	gamescope::Rc<CVulkanTexture> texture, std::span<const pixman_box32_t> damage )
+{
+	if ( damage.empty() )
+		return true;
+
+	void *src = nullptr;
+	uint32_t drmFormat = DRM_FORMAT_INVALID;
+	size_t stride = 0;
+	if ( !wlr_buffer_begin_data_ptr_access( buf, WLR_BUFFER_DATA_PTR_ACCESS_READ,
+		&src, &drmFormat, &stride ) )
+		return false;
+
+	const uint32_t bytesPerPixel = DRMFormatGetBPP( drmFormat );
+	if ( bytesPerPixel == 0 )
+	{
+		wlr_buffer_end_data_ptr_access( buf );
+		return true;
+	}
+
+	std::vector<pixman_box32_t> clippedDamage;
+	clippedDamage.reserve( damage.size() );
+	for ( const pixman_box32_t &rectangle : damage )
+	{
+		pixman_box32_t clipped = {
+			.x1 = std::clamp<int32_t>( rectangle.x1, 0, buf->width ),
+			.y1 = std::clamp<int32_t>( rectangle.y1, 0, buf->height ),
+			.x2 = std::clamp<int32_t>( rectangle.x2, 0, buf->width ),
+			.y2 = std::clamp<int32_t>( rectangle.y2, 0, buf->height ),
+		};
+		if ( clipped.x1 < clipped.x2 && clipped.y1 < clipped.y2 )
+			clippedDamage.push_back( clipped );
+	}
+	if ( clippedDamage.empty() )
+	{
+		wlr_buffer_end_data_ptr_access( buf );
+		return true;
+	}
+
+	struct PendingCopy
+	{
+		pixman_box32_t rectangle;
+		VkDeviceSize offset;
+		size_t rowBytes;
+	};
+	std::vector<PendingCopy> pendingCopies;
+	pendingCopies.reserve( clippedDamage.size() );
+	VkDeviceSize stagingSize = 0;
+	for ( const pixman_box32_t &rectangle : clippedDamage )
+	{
+		stagingSize = ( stagingSize + 3 ) & ~VkDeviceSize{ 3 };
+		const size_t rowBytes = ( rectangle.x2 - rectangle.x1 ) * bytesPerPixel;
+		pendingCopies.push_back( PendingCopy{
+			.rectangle = rectangle,
+			.offset = stagingSize,
+			.rowBytes = rowBytes,
+		} );
+		stagingSize += rowBytes * ( rectangle.y2 - rectangle.y1 );
+	}
+
+	VkBufferCreateInfo bufferCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = stagingSize,
+		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	};
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VkResult result = g_device.vk.CreateBuffer( g_device.device(), &bufferCreateInfo,
+		nullptr, &buffer );
+	if ( result != VK_SUCCESS )
+	{
+		wlr_buffer_end_data_ptr_access( buf );
+		return false;
+	}
+
+	VkMemoryRequirements requirements = {};
+	g_device.vk.GetBufferMemoryRequirements( g_device.device(), buffer, &requirements );
+	const uint32_t memoryType = g_device.findMemoryType(
+		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		requirements.memoryTypeBits );
+	if ( memoryType == ~0u )
+	{
+		g_device.vk.DestroyBuffer( g_device.device(), buffer, nullptr );
+		wlr_buffer_end_data_ptr_access( buf );
+		return false;
+	}
+
+	VkMemoryAllocateInfo allocateInfo = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = requirements.size,
+		.memoryTypeIndex = memoryType,
+	};
+	VkDeviceMemory memory = VK_NULL_HANDLE;
+	result = g_device.vk.AllocateMemory( g_device.device(), &allocateInfo, nullptr, &memory );
+	if ( result != VK_SUCCESS ||
+		g_device.vk.BindBufferMemory( g_device.device(), buffer, memory, 0 ) != VK_SUCCESS )
+	{
+		g_device.vk.DestroyBuffer( g_device.device(), buffer, nullptr );
+		if ( memory != VK_NULL_HANDLE )
+			g_device.vk.FreeMemory( g_device.device(), memory, nullptr );
+		wlr_buffer_end_data_ptr_access( buf );
+		return false;
+	}
+
+	void *mapped = nullptr;
+	result = g_device.vk.MapMemory( g_device.device(), memory, 0, VK_WHOLE_SIZE, 0, &mapped );
+	if ( result != VK_SUCCESS )
+	{
+		g_device.vk.DestroyBuffer( g_device.device(), buffer, nullptr );
+		g_device.vk.FreeMemory( g_device.device(), memory, nullptr );
+		wlr_buffer_end_data_ptr_access( buf );
+		return false;
+	}
+
+	std::vector<VkBufferImageCopy> copyRegions;
+	copyRegions.reserve( pendingCopies.size() );
+	for ( const PendingCopy &copy : pendingCopies )
+	{
+		const pixman_box32_t &rectangle = copy.rectangle;
+		const size_t sourceRowOffset = rectangle.x1 * bytesPerPixel;
+		for ( int32_t y = rectangle.y1; y < rectangle.y2; y++ )
+		{
+			const size_t destinationRow = y - rectangle.y1;
+			memcpy( static_cast<uint8_t *>( mapped ) + copy.offset +
+					destinationRow * copy.rowBytes,
+				static_cast<uint8_t *>( src ) + y * stride + sourceRowOffset,
+				copy.rowBytes );
+		}
+
+		copyRegions.push_back( VkBufferImageCopy{
+			.bufferOffset = copy.offset,
+			.bufferRowLength = uint32_t( rectangle.x2 - rectangle.x1 ),
+			.imageSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.layerCount = 1,
+			},
+			.imageOffset = { .x = rectangle.x1, .y = rectangle.y1, .z = 0 },
+			.imageExtent = {
+				.width = uint32_t( rectangle.x2 - rectangle.x1 ),
+				.height = uint32_t( rectangle.y2 - rectangle.y1 ),
+				.depth = 1,
+			},
+		} );
+	}
+
+	g_device.vk.UnmapMemory( g_device.device(), memory );
+	wlr_buffer_end_data_ptr_access( buf );
+
+	auto commandBuffer = g_device.commandBuffer();
+	commandBuffer->copyBufferToImage( buffer, texture, copyRegions );
+	const uint64_t sequence = g_device.submit( std::move( commandBuffer ) );
+	g_device.wait( sequence );
+	g_device.vk.DestroyBuffer( g_device.device(), buffer, nullptr );
+	g_device.vk.FreeMemory( g_device.device(), memory, nullptr );
+	return true;
 }
