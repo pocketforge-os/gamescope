@@ -1,5 +1,6 @@
 #include "commit_fence.hpp"
 #include "gamescope-control-client-protocol.h"
+#include "viewporter-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -155,6 +156,8 @@ struct Client
 	wl_shm *shm = nullptr;
 	xdg_wm_base *wmBase = nullptr;
 	gamescope_control *control = nullptr;
+	wp_viewporter *viewporter = nullptr;
+	wp_viewport *viewport = nullptr;
 	wl_surface *surface = nullptr;
 	xdg_surface *xdgSurface = nullptr;
 	xdg_toplevel *toplevel = nullptr;
@@ -180,6 +183,9 @@ void registryGlobal( void *data, wl_registry *registry, uint32_t name,
 	else if ( std::strcmp( interface, gamescope_control_interface.name ) == 0 )
 		client.control = static_cast<gamescope_control *>( wl_registry_bind(
 			registry, name, &gamescope_control_interface, std::min( version, 6u ) ) );
+	else if ( std::strcmp( interface, wp_viewporter_interface.name ) == 0 )
+		client.viewporter = static_cast<wp_viewporter *>( wl_registry_bind(
+			registry, name, &wp_viewporter_interface, 1 ) );
 }
 
 void registryRemove( void *, wl_registry *, uint32_t ) {}
@@ -629,6 +635,131 @@ bool runToolkitDamageCase( Client &client, const char *screenshotPath,
 	return captureShowsToolkitBlue( client, screenshotPath );
 }
 
+enum class MappingTransition
+{
+	Scale,
+	Transform,
+};
+
+const char *mappingTransitionName( MappingTransition transition )
+{
+	switch ( transition )
+	{
+		case MappingTransition::Scale: return "scale";
+		case MappingTransition::Transform: return "transform";
+	}
+	return "unknown";
+}
+
+void setBaselineMapping( Client &client )
+{
+	wl_surface_set_buffer_scale( client.surface, 1 );
+	wl_surface_set_buffer_transform( client.surface, WL_OUTPUT_TRANSFORM_NORMAL );
+	if ( client.viewport )
+	{
+		wp_viewport_set_source( client.viewport, wl_fixed_from_int( -1 ),
+			wl_fixed_from_int( -1 ), wl_fixed_from_int( -1 ), wl_fixed_from_int( -1 ) );
+		wp_viewport_set_destination( client.viewport, -1, -1 );
+	}
+}
+
+void setChangedMapping( Client &client, MappingTransition transition )
+{
+	setBaselineMapping( client );
+	switch ( transition )
+	{
+		case MappingTransition::Scale:
+			wl_surface_set_buffer_scale( client.surface, 2 );
+			break;
+		case MappingTransition::Transform:
+			wl_surface_set_buffer_transform( client.surface, WL_OUTPUT_TRANSFORM_90 );
+			break;
+	}
+}
+
+void paintBlueFeature( Buffer &buffer )
+{
+	uint32_t *pixels = static_cast<uint32_t *>( buffer.pixels );
+	for ( int y = 11; y < 15; y++ )
+		std::fill_n( pixels + y * kWidth + 7, 4, 0x000000ffu );
+}
+
+bool captureContainsBlueFeature( Client &client, const char *screenshotPath )
+{
+	client.screenshotDone = false;
+	client.screenshotPath = screenshotPath;
+	gamescope_control_take_screenshot( client.control, screenshotPath,
+		GAMESCOPE_CONTROL_SCREENSHOT_TYPE_SCREEN_BUFFER, 0 );
+	check( dispatchUntil( client, &Client::screenshotDone, std::chrono::seconds{ 5 } ),
+		"capture mapping-transition screen buffer" );
+
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+	unsigned char *pixels = stbi_load( screenshotPath, &width, &height, &channels, 4 );
+	check( pixels && width == kWidth && height == kHeight,
+		"decode mapping-transition frame" );
+	size_t bluePixels = 0;
+	for ( int y = 0; y < height; y++ )
+	{
+		for ( int x = 0; x < width; x++ )
+		{
+			const unsigned char *pixel = pixels + ( size_t( y ) * width + x ) * 4;
+			if ( pixel[0] < 64 && pixel[1] < 64 && pixel[2] > 192 )
+				bluePixels++;
+		}
+	}
+	stbi_image_free( pixels );
+	unlink( screenshotPath );
+	return bluePixels >= 8;
+}
+
+bool runMappingTransitionCase( Client &client, const char *screenshotPath,
+	MappingTransition transition )
+{
+	Buffer buffers[] = {
+		makeBuffer( client, 0x00ff0000u ),
+		makeBuffer( client, 0x0000ff00u ),
+	};
+	armBuffer( buffers[0] );
+	armBuffer( buffers[1] );
+
+	setBaselineMapping( client );
+	present( client, buffers[0] );
+	check( dispatchUntil( client, &Client::frameDone, std::chrono::seconds{ 5 } ),
+		"present baseline mapping buffer" );
+
+	setChangedMapping( client, transition );
+	client.frameDone = false;
+	buffers[1].released = false;
+	wl_surface_attach( client.surface, buffers[1].buffer, 0, 0 );
+	wl_surface_damage( client.surface, 7, 11, 4, 4 );
+	wl_callback *changedCallback = wl_surface_frame( client.surface );
+	wl_callback_add_listener( changedCallback, &frameListener, &client );
+	wl_surface_commit( client.surface );
+	check( wl_display_flush( client.display ) >= 0 || errno == EAGAIN,
+		"flush changed mapping commit" );
+	check( dispatchUntil( client, &Client::frameDone, std::chrono::seconds{ 5 } ),
+		"present changed mapping buffer" );
+	check( dispatchUntilFlag( client, buffers[0].released, std::chrono::seconds{ 5 } ),
+		"baseline mapping buffer was not released" );
+
+	paintBlueFeature( buffers[0] );
+	setBaselineMapping( client );
+	client.frameDone = false;
+	buffers[0].released = false;
+	wl_surface_attach( client.surface, buffers[0].buffer, 0, 0 );
+	wl_surface_damage( client.surface, 48, 32, 1, 8 );
+	wl_callback *tailCallback = wl_surface_frame( client.surface );
+	wl_callback_add_listener( tailCallback, &frameListener, &client );
+	wl_surface_commit( client.surface );
+	check( wl_display_flush( client.display ) >= 0 || errno == EAGAIN,
+		"flush restored mapping commit" );
+	check( dispatchUntil( client, &Client::frameDone, std::chrono::milliseconds{ 750 } ),
+		"restored mapping commit stayed unpresented" );
+	return captureContainsBlueFeature( client, screenshotPath );
+}
+
 int runClient( const char *screenshotPath )
 {
 	Client client;
@@ -643,6 +774,8 @@ int runClient( const char *screenshotPath )
 	xdg_wm_base_add_listener( client.wmBase, &wmBaseListener, &client );
 	gamescope_control_add_listener( client.control, &controlListener, &client );
 	client.surface = wl_compositor_create_surface( client.compositor );
+	if ( client.viewporter )
+		client.viewport = wp_viewporter_get_viewport( client.viewporter, client.surface );
 	client.xdgSurface = xdg_wm_base_get_xdg_surface( client.wmBase, client.surface );
 	xdg_surface_add_listener( client.xdgSurface, &xdgSurfaceListener, &client );
 	client.toplevel = xdg_surface_get_toplevel( client.xdgSurface );
@@ -666,6 +799,24 @@ int runClient( const char *screenshotPath )
 			passed = passed && casePassed;
 		}
 		check( passed, "scaled toolkit partial damage lost its last glyph" );
+		writeResult( "PASS\n" );
+		while ( g_holdAfterResult ) pause();
+		return 0;
+	}
+	if ( std::getenv( "GS_NO_FENCE_MAPPING" ) )
+	{
+		bool passed = true;
+		for ( MappingTransition transition :
+			{ MappingTransition::Scale, MappingTransition::Transform } )
+		{
+			const bool casePassed = runMappingTransitionCase( client, screenshotPath, transition );
+			if ( !casePassed )
+				std::fprintf( stderr,
+					"no-fence-presentation: stale pooled buffer after %s transition\n",
+					mappingTransitionName( transition ) );
+			passed = passed && casePassed;
+		}
+		check( passed, "mapping transitions lost pooled wl_shm damage" );
 		writeResult( "PASS\n" );
 		while ( g_holdAfterResult ) pause();
 		return 0;
@@ -732,7 +883,8 @@ int runClient( const char *screenshotPath )
 	return 0;
 }
 
-int runParent( const char *self, const char *gamescope, const char *reaper, bool toolkit )
+int runParent( const char *self, const char *gamescope, const char *reaper,
+	bool toolkit, bool mapping )
 {
 	if ( !toolkit ) fencedControl();
 	Scratch scratch;
@@ -749,6 +901,7 @@ int runParent( const char *self, const char *gamescope, const char *reaper, bool
 		setenv( "GS_NO_FENCE_SCREENSHOT", scratch.screenshot.c_str(), 1 );
 		setenv( "GS_NO_FENCE_RESULT", scratch.result.c_str(), 1 );
 		if ( toolkit ) setenv( "GS_NO_FENCE_TOOLKIT", "1", 1 );
+		if ( mapping ) setenv( "GS_NO_FENCE_MAPPING", "1", 1 );
 		const std::string reaperPath = reaper;
 		const size_t separator = reaperPath.find_last_of( '/' );
 		if ( separator == std::string::npos ) _exit( 126 );
@@ -817,7 +970,9 @@ int main( int argc, char **argv )
 	const ssize_t size = readlink( "/proc/self/exe", self.data(), self.size() - 1 );
 	check( size > 0, "resolve test executable" );
 	self[size] = '\0';
-	const int regular = runParent( self.data(), argv[1], argv[2], false );
+	const int regular = runParent( self.data(), argv[1], argv[2], false, false );
 	if ( regular != 0 ) return regular;
-	return runParent( self.data(), argv[1], argv[2], true );
+	const int toolkit = runParent( self.data(), argv[1], argv[2], true, false );
+	if ( toolkit != 0 ) return toolkit;
+	return runParent( self.data(), argv[1], argv[2], false, true );
 }
