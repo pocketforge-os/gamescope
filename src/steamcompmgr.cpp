@@ -1391,7 +1391,8 @@ import_commit (
 	std::vector<struct wl_resource*> presentation_feedbacks,
 	std::optional<uint32_t> present_id,
 	uint64_t desired_present_time,
-	bool fifo )
+	bool fifo,
+	const std::vector<pixman_box32_t> &bufferDamage )
 {
 	gamescope::Rc<commit_t> commit = new commit_t;
 	struct wlr_dmabuf_attributes diagnosticDmabuf = {0};
@@ -1417,6 +1418,10 @@ import_commit (
 
 	if ( gamescope::OwningRc<CVulkanTexture> pTexture = s_BufferMemos.LookupVulkanTexture( buf ) )
 	{
+		if ( !diagnosticHasDmabuf && !bufferDamage.empty() &&
+			!vulkan_update_texture_from_wlr_buffer( buf, pTexture, bufferDamage ) )
+			return nullptr;
+
 		// Going from OwningRc -> Rc now.
 		commit->vulkanTex = pTexture;
 		if ( gamescope::compositor_diagnostics::enabled() )
@@ -7401,7 +7406,8 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 		std::move(reslistentry.presentation_feedbacks),
 		reslistentry.present_id,
 		reslistentry.desired_present_time,
-		reslistentry.fifo );
+		reslistentry.fifo,
+		reslistentry.bufferDamage );
 
 
 	if ( newCommit == nullptr )
