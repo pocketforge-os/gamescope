@@ -190,4 +190,5 @@ test(
 	test_no_fence_presentation,
 	args: [gamescope_exe, gamescope_reaper_exe],
 	timeout: 20,
+	is_parallel: false,
 )
