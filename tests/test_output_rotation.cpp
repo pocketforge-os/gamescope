@@ -60,10 +60,40 @@ std::vector<uint32_t> transformImage( std::span<const uint32_t> source,
 
 void test_asymmetric_pixels_and_inverse_mappings()
 {
-	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_90 ) == Transform::Rotate90 );
-	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_270 ) == Transform::Rotate270 );
-	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_0 ) == Transform::Normal );
-	CHECK( transformFromPanelOrientation( GAMESCOPE_PANEL_ORIENTATION_180 ) == Transform::Rotate180 );
+	enum DrmPanelOrientationFixture : uint64_t
+	{
+		DrmNormal = 0,
+		DrmBottomUp = 1,
+		DrmLeftUp = 2,
+		DrmRightUp = 3,
+	};
+	struct PanelCase
+	{
+		uint64_t drm;
+		GamescopePanelOrientation panel;
+		Transform logicalToNative;
+	};
+	// Linux drm_connector.h defines LEFT_UP as the panel's left side matching
+	// the casing top, and RIGHT_UP as its right side matching the casing top.
+	// DRM plane rotation is counter-clockwise; Transform is clockwise.
+	constexpr std::array panelCases = {
+		PanelCase{ DrmNormal,
+			GAMESCOPE_PANEL_ORIENTATION_0, Transform::Normal },
+		PanelCase{ DrmBottomUp,
+			GAMESCOPE_PANEL_ORIENTATION_180, Transform::Rotate180 },
+		PanelCase{ DrmLeftUp,
+			GAMESCOPE_PANEL_ORIENTATION_90, Transform::Rotate270 },
+		PanelCase{ DrmRightUp,
+			GAMESCOPE_PANEL_ORIENTATION_270, Transform::Rotate90 },
+	};
+	for ( const auto &item : panelCases )
+	{
+		CHECK( panelOrientationFromDrm( item.drm ) == item.panel );
+		CHECK( transformFromPanelOrientation( item.panel ) == item.logicalToNative );
+		CHECK( panelOrientationFromTransform( item.logicalToNative ) == item.panel );
+	}
+	CHECK( !panelOrientationFromDrm( uint64_t( -1 ) ) );
+	CHECK( !panelOrientationFromDrm( 99 ) );
 
 	// Logical 4x3 image. Every edge, row, and column is distinguishable.
 	const std::array<uint32_t, 12> source = {
