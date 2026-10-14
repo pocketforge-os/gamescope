@@ -553,6 +553,8 @@ int runClient( const char *screenshotPath )
 
 	check( captureShowsBlue( client, screenshotPath, false ),
 		"presented frame did not contain the changed blue buffer" );
+	check( runBurstCase( client, screenshotPath ),
+		"screenshot did not contain the last two-buffer burst commit" );
 
 	bool reuseCasesPassed = true;
 	for ( bool rgb565 : { false, true } )
@@ -574,8 +576,6 @@ int runClient( const char *screenshotPath )
 		}
 	}
 	check( reuseCasesPassed, "reused wl_shm buffers did not upload their latest damage" );
-	check( runBurstCase( client, screenshotPath ),
-		"screenshot did not contain the last two-buffer burst commit" );
 	writeResult( "PASS\n" );
 	while ( g_holdAfterResult ) pause();
 
