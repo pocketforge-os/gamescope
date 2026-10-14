@@ -58,7 +58,9 @@ struct Layout
 
 Extent transformExtent( Extent logicalExtent, Transform transform );
 Transform compose( Transform first, Transform next );
+std::optional<GamescopePanelOrientation> panelOrientationFromDrm( uint64_t orientation );
 Transform transformFromPanelOrientation( GamescopePanelOrientation orientation );
+GamescopePanelOrientation panelOrientationFromTransform( Transform transform );
 std::optional<Layout> makeLayout( Extent logicalExtent, Transform transform,
 	uint32_t bytesPerPixel, uint32_t rowPitchAlignment );
 

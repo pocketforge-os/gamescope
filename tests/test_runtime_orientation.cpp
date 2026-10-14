@@ -112,6 +112,8 @@ screen_rotation = { screen_main="cw90" }
 		CHECK( plan.outputTransform == item.transform );
 		CHECK( plan.protocolTransform == item.protocol );
 		CHECK( plan.logicalExtent == item.logical );
+		CHECK( transformFromPanelOrientation(
+			panelOrientationFromTransform( plan.outputTransform ) ) == item.transform );
 	}
 }
 
