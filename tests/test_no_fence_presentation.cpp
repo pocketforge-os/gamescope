@@ -267,6 +267,7 @@ bool dispatchUntil( Client &client, bool Client::*field, std::chrono::millisecon
 struct Buffer
 {
 	int fd = -1;
+	size_t size = 0;
 	void *pixels = MAP_FAILED;
 	wl_shm_pool *pool = nullptr;
 	wl_buffer *buffer = nullptr;
@@ -277,6 +278,7 @@ struct Buffer
 	Buffer &operator=( const Buffer & ) = delete;
 	Buffer( Buffer &&other ) noexcept
 		: fd( std::exchange( other.fd, -1 ) )
+		, size( std::exchange( other.size, 0 ) )
 		, pixels( std::exchange( other.pixels, MAP_FAILED ) )
 		, pool( std::exchange( other.pool, nullptr ) )
 		, buffer( std::exchange( other.buffer, nullptr ) )
@@ -288,7 +290,7 @@ struct Buffer
 	{
 		if ( buffer ) wl_buffer_destroy( buffer );
 		if ( pool ) wl_shm_pool_destroy( pool );
-		if ( pixels != MAP_FAILED ) munmap( pixels, kWidth * kHeight * 4 );
+		if ( pixels != MAP_FAILED ) munmap( pixels, size );
 		if ( fd >= 0 ) close( fd );
 	}
 };
@@ -305,15 +307,34 @@ Buffer makeBuffer( Client &client, uint32_t color )
 	Buffer result;
 	result.fd = memfd_create( "gamescope-no-fence-frame", MFD_CLOEXEC );
 	check( result.fd >= 0, "create wl_shm memfd" );
-	const size_t size = kWidth * kHeight * 4;
-	check( ftruncate( result.fd, off_t( size ) ) == 0, "size wl_shm memfd" );
-	result.pixels = mmap( nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, result.fd, 0 );
+	result.size = kWidth * kHeight * 4;
+	check( ftruncate( result.fd, off_t( result.size ) ) == 0, "size wl_shm memfd" );
+	result.pixels = mmap( nullptr, result.size, PROT_READ | PROT_WRITE, MAP_SHARED, result.fd, 0 );
 	check( result.pixels != MAP_FAILED, "map wl_shm memfd" );
 	std::fill_n( static_cast<uint32_t *>( result.pixels ), kWidth * kHeight, color );
-	result.pool = wl_shm_create_pool( client.shm, result.fd, int( size ) );
+	result.pool = wl_shm_create_pool( client.shm, result.fd, int( result.size ) );
 	result.buffer = wl_shm_pool_create_buffer( result.pool, 0, kWidth, kHeight,
 		kWidth * 4, WL_SHM_FORMAT_XRGB8888 );
 	check( result.pool && result.buffer, "create wl_shm buffer" );
+	return result;
+}
+
+Buffer makeRgb565Buffer( Client &client, uint16_t color )
+{
+	Buffer result;
+	result.fd = memfd_create( "gamescope-no-fence-rgb565-frame", MFD_CLOEXEC );
+	check( result.fd >= 0, "create RGB565 wl_shm memfd" );
+	result.size = kWidth * kHeight * 2;
+	check( ftruncate( result.fd, off_t( result.size ) ) == 0,
+		"size RGB565 wl_shm memfd" );
+	result.pixels = mmap( nullptr, result.size, PROT_READ | PROT_WRITE,
+		MAP_SHARED, result.fd, 0 );
+	check( result.pixels != MAP_FAILED, "map RGB565 wl_shm memfd" );
+	std::fill_n( static_cast<uint16_t *>( result.pixels ), kWidth * kHeight, color );
+	result.pool = wl_shm_create_pool( client.shm, result.fd, int( result.size ) );
+	result.buffer = wl_shm_pool_create_buffer( result.pool, 0, kWidth, kHeight,
+		kWidth * 2, WL_SHM_FORMAT_RGB565 );
+	check( result.pool && result.buffer, "create RGB565 wl_shm buffer" );
 	return result;
 }
 
@@ -397,11 +418,11 @@ bool captureShowsBlue( Client &client, const char *screenshotPath, bool partial 
 }
 
 bool runReuseCase( Client &client, const char *screenshotPath,
-	DamageCoordinates coordinates, bool partial )
+	DamageCoordinates coordinates, bool partial, bool rgb565 )
 {
 	Buffer buffers[] = {
-		makeBuffer( client, 0x00ff0000u ),
-		makeBuffer( client, 0x0000ff00u ),
+		rgb565 ? makeRgb565Buffer( client, 0xf800u ) : makeBuffer( client, 0x00ff0000u ),
+		rgb565 ? makeRgb565Buffer( client, 0x07e0u ) : makeBuffer( client, 0x0000ff00u ),
 	};
 	armBuffer( buffers[0] );
 	armBuffer( buffers[1] );
@@ -415,15 +436,31 @@ bool runReuseCase( Client &client, const char *screenshotPath,
 	check( dispatchUntilFlag( client, buffers[0].released, std::chrono::seconds{ 5 } ),
 		"first pooled buffer was not released for reuse" );
 
-	uint32_t *pixels = static_cast<uint32_t *>( buffers[0].pixels );
-	if ( partial )
+	if ( rgb565 )
 	{
-		for ( int y = kHeight / 4; y < 3 * kHeight / 4; y++ )
-			std::fill_n( pixels + y * kWidth + kWidth / 4, kWidth / 2, 0x000000ffu );
+		uint16_t *pixels = static_cast<uint16_t *>( buffers[0].pixels );
+		if ( partial )
+		{
+			for ( int y = kHeight / 4; y < 3 * kHeight / 4; y++ )
+				std::fill_n( pixels + y * kWidth + kWidth / 4, kWidth / 2, 0x001fu );
+		}
+		else
+		{
+			std::fill_n( pixels, kWidth * kHeight, 0x001fu );
+		}
 	}
 	else
 	{
-		std::fill_n( pixels, kWidth * kHeight, 0x000000ffu );
+		uint32_t *pixels = static_cast<uint32_t *>( buffers[0].pixels );
+		if ( partial )
+		{
+			for ( int y = kHeight / 4; y < 3 * kHeight / 4; y++ )
+				std::fill_n( pixels + y * kWidth + kWidth / 4, kWidth / 2, 0x000000ffu );
+		}
+		else
+		{
+			std::fill_n( pixels, kWidth * kHeight, 0x000000ffu );
+		}
 	}
 	present( client, buffers[0], coordinates, partial );
 	check( dispatchUntil( client, &Client::frameDone, std::chrono::seconds{ 5 } ),
@@ -480,17 +517,22 @@ int runClient( const char *screenshotPath )
 		"presented frame did not contain the changed blue buffer" );
 
 	bool reuseCasesPassed = true;
-	for ( DamageCoordinates coordinates : { DamageCoordinates::Surface, DamageCoordinates::Buffer } )
+	for ( bool rgb565 : { false, true } )
 	{
-		for ( bool partial : { false, true } )
+		for ( DamageCoordinates coordinates : { DamageCoordinates::Surface, DamageCoordinates::Buffer } )
 		{
-			const bool passed = runReuseCase( client, screenshotPath, coordinates, partial );
-			if ( !passed )
-				std::fprintf( stderr,
-					"no-fence-presentation: stale reused wl_shm buffer (%s, %s damage)\n",
-					coordinates == DamageCoordinates::Buffer ? "damage_buffer" : "damage",
-					partial ? "partial" : "full" );
-			reuseCasesPassed = reuseCasesPassed && passed;
+			for ( bool partial : { false, true } )
+			{
+				const bool passed = runReuseCase( client, screenshotPath, coordinates, partial,
+					rgb565 );
+				if ( !passed )
+					std::fprintf( stderr,
+						"no-fence-presentation: stale reused %s wl_shm buffer (%s, %s damage)\n",
+						rgb565 ? "RGB565" : "XRGB8888",
+						coordinates == DamageCoordinates::Buffer ? "damage_buffer" : "damage",
+						partial ? "partial" : "full" );
+				reuseCasesPassed = reuseCasesPassed && passed;
+			}
 		}
 	}
 	check( reuseCasesPassed, "reused wl_shm buffers did not upload their latest damage" );
