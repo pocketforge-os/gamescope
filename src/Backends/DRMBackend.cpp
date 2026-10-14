@@ -2308,22 +2308,12 @@ namespace gamescope
 		{
 			if ( this->GetProperties().panel_orientation )
 			{
-				switch ( this->GetProperties().panel_orientation->GetCurrentValue() )
+				const auto orientation = output_rotation::panelOrientationFromDrm(
+					this->GetProperties().panel_orientation->GetCurrentValue() );
+				if ( orientation )
 				{
-					case DRM_MODE_PANEL_ORIENTATION_NORMAL:
-						m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_0;
-						goto fixed_mount_chosen;
-					case DRM_MODE_PANEL_ORIENTATION_BOTTOM_UP:
-						m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_180;
-						goto fixed_mount_chosen;
-					case DRM_MODE_PANEL_ORIENTATION_LEFT_UP:
-						m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_90;
-						goto fixed_mount_chosen;
-					case DRM_MODE_PANEL_ORIENTATION_RIGHT_UP:
-						m_FixedMountOrientation = GAMESCOPE_PANEL_ORIENTATION_270;
-						goto fixed_mount_chosen;
-					default:
-						break;
+					m_FixedMountOrientation = *orientation;
+					goto fixed_mount_chosen;
 				}
 			}
 

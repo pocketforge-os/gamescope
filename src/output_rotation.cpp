@@ -95,18 +95,46 @@ Transform compose( Transform first, Transform next )
 	return Transform( ( uint32_t( first ) + uint32_t( next ) ) % 4 );
 }
 
+std::optional<GamescopePanelOrientation> panelOrientationFromDrm( uint64_t orientation )
+{
+	// drm_panel_orientation values are fixed in drm_connector.h: LEFT_UP means
+	// the panel's left edge is at the casing top, and RIGHT_UP its right edge.
+	switch ( orientation )
+	{
+		case 0: return GAMESCOPE_PANEL_ORIENTATION_0;
+		case 1: return GAMESCOPE_PANEL_ORIENTATION_180;
+		case 2: return GAMESCOPE_PANEL_ORIENTATION_90;
+		case 3: return GAMESCOPE_PANEL_ORIENTATION_270;
+		default: return std::nullopt;
+	}
+}
+
 Transform transformFromPanelOrientation( GamescopePanelOrientation orientation )
 {
+	// GamescopePanelOrientation follows DRM plane rotation, whose angles are
+	// counter-clockwise. Transform describes the clockwise logical-to-native
+	// pixel transform, so quarter turns are inverse directions.
 	switch ( orientation )
 	{
 		case GAMESCOPE_PANEL_ORIENTATION_90:
-			return Transform::Rotate90;
+			return Transform::Rotate270;
 		case GAMESCOPE_PANEL_ORIENTATION_180:
 			return Transform::Rotate180;
 		case GAMESCOPE_PANEL_ORIENTATION_270:
-			return Transform::Rotate270;
+			return Transform::Rotate90;
 		default:
 			return Transform::Normal;
+	}
+}
+
+GamescopePanelOrientation panelOrientationFromTransform( Transform transform )
+{
+	switch ( transform )
+	{
+		case Transform::Rotate90: return GAMESCOPE_PANEL_ORIENTATION_270;
+		case Transform::Rotate180: return GAMESCOPE_PANEL_ORIENTATION_180;
+		case Transform::Rotate270: return GAMESCOPE_PANEL_ORIENTATION_90;
+		default: return GAMESCOPE_PANEL_ORIENTATION_0;
 	}
 }
 

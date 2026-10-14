@@ -138,14 +138,7 @@ bool wlserver_process_hotkeys( wlr_keyboard *keyboard, uint32_t key, bool press 
 static GamescopePanelOrientation panel_orientation(
 	gamescope::output_rotation::Transform transform )
 {
-	switch ( transform )
-	{
-		case gamescope::output_rotation::Transform::Normal: return GAMESCOPE_PANEL_ORIENTATION_0;
-		case gamescope::output_rotation::Transform::Rotate90: return GAMESCOPE_PANEL_ORIENTATION_90;
-		case gamescope::output_rotation::Transform::Rotate180: return GAMESCOPE_PANEL_ORIENTATION_180;
-		case gamescope::output_rotation::Transform::Rotate270: return GAMESCOPE_PANEL_ORIENTATION_270;
-	}
-	return GAMESCOPE_PANEL_ORIENTATION_0;
+	return gamescope::output_rotation::panelOrientationFromTransform( transform );
 }
 
 static wl_output_transform wayland_transform(
