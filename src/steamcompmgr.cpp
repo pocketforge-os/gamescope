@@ -1392,7 +1392,8 @@ import_commit (
 	std::optional<uint32_t> present_id,
 	uint64_t desired_present_time,
 	bool fifo,
-	const std::vector<pixman_box32_t> &bufferDamage )
+	const std::vector<pixman_box32_t> &bufferDamage,
+	uint64_t damageTrackingId )
 {
 	gamescope::Rc<commit_t> commit = new commit_t;
 	struct wlr_dmabuf_attributes diagnosticDmabuf = {0};
@@ -1416,11 +1417,16 @@ import_commit (
 		commit->fifo = false;
 	}
 
-	if ( gamescope::OwningRc<CVulkanTexture> pTexture = s_BufferMemos.LookupVulkanTexture( buf ) )
+	std::vector<pixman_box32_t> uploadDamage;
+	if ( gamescope::OwningRc<CVulkanTexture> pTexture = s_BufferMemos.LookupVulkanTexture(
+		buf, damageTrackingId, bufferDamage, uploadDamage ) )
 	{
-		if ( !diagnosticHasDmabuf && !bufferDamage.empty() &&
-			!vulkan_update_texture_from_wlr_buffer( buf, pTexture, bufferDamage ) )
+		if ( !diagnosticHasDmabuf && !uploadDamage.empty() &&
+			!vulkan_update_texture_from_wlr_buffer( buf, pTexture, uploadDamage ) )
+		{
+			s_BufferMemos.RequeueDamage( buf, uploadDamage );
 			return nullptr;
+		}
 
 		// Going from OwningRc -> Rc now.
 		commit->vulkanTex = pTexture;
@@ -1453,7 +1459,7 @@ import_commit (
 
 	commit->vulkanTex = pOwnedTexture;
 
-	s_BufferMemos.MemoizeBuffer( buf, std::move( pOwnedTexture ) );
+	s_BufferMemos.MemoizeBuffer( buf, std::move( pOwnedTexture ), damageTrackingId, !diagnosticHasDmabuf );
 	if ( gamescope::compositor_diagnostics::enabled() )
 		xwm_log.infof( "surface probe event=import appid=%u buffer=%p kind=%s "
 			"size=%dx%d cached=0 success=1", w->appID, buf,
@@ -7407,7 +7413,8 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 		reslistentry.present_id,
 		reslistentry.desired_present_time,
 		reslistentry.fifo,
-		reslistentry.bufferDamage );
+		reslistentry.bufferDamage,
+		reslistentry.damageTrackingId );
 
 
 	if ( newCommit == nullptr )

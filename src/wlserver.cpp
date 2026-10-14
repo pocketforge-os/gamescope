@@ -277,6 +277,7 @@ std::optional<ResListEntry_t> PrepareCommit( struct wlr_surface *surf, struct wl
 				return std::vector<pixman_box32_t>{};
 			return std::vector<pixman_box32_t>{ rectangles, rectangles + count };
 		}(),
+		wl_surf->damage_tracking_id,
 		std::move( pAcquirePoint ),
 		std::move( pReleasePoint )
 	};
@@ -697,6 +698,8 @@ static void wlserver_new_input(struct wl_listener *listener, void *data)
 
 static struct wl_listener new_input_listener = { .notify = wlserver_new_input };
 
+static uint64_t s_nextSurfaceDamageTrackingId = 0;
+
 wlserver_wl_surface_info *get_wl_surface_info(struct wlr_surface *wlr_surf)
 {
 	if (!wlr_surf)
@@ -782,6 +785,7 @@ static void wlserver_new_surface(struct wl_listener *l, void *data)
 
 	wlserver_wl_surface_info *wl_surface_info = new wlserver_wl_surface_info;
 	wl_surface_info->wlr = wlr_surf;
+	wl_surface_info->damage_tracking_id = ++s_nextSurfaceDamageTrackingId;
 
 	wl_surface_info->destroy.notify = handle_wl_surface_destroy;
 	wl_signal_add( &wlr_surf->events.destroy, &wl_surface_info->destroy );
