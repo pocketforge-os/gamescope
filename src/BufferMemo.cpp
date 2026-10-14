@@ -11,11 +11,12 @@ namespace gamescope
     /////////////////
 
     CBufferMemo::CBufferMemo( CBufferMemoizer *pMemoizer, wlr_buffer *pBuffer, OwningRc<CVulkanTexture> pTexture,
-        uint64_t uSurfaceId, bool bCpuBacked )
+        uint64_t uSurfaceId, uint64_t uMappingGeneration, bool bCpuBacked )
         : m_pMemoizer{ pMemoizer }
         , m_pBuffer{ pBuffer }
         , m_pVulkanTexture{ std::move( pTexture ) }
         , m_uSurfaceId{ uSurfaceId }
+        , m_uMappingGeneration{ uMappingGeneration }
         , m_bCpuBacked{ bCpuBacked }
     {
         pixman_region32_init( &m_PendingDamage );
@@ -47,9 +48,11 @@ namespace gamescope
         return result;
     }
 
-    void CBufferMemo::ResetForSurface( uint64_t uSurfaceId, int nWidth, int nHeight )
+    void CBufferMemo::ResetForMapping( uint64_t uSurfaceId, uint64_t uMappingGeneration,
+        int nWidth, int nHeight )
     {
         m_uSurfaceId = uSurfaceId;
+        m_uMappingGeneration = uMappingGeneration;
         pixman_region32_clear( &m_PendingDamage );
         pixman_region32_union_rect( &m_PendingDamage, &m_PendingDamage, 0, 0, nWidth, nHeight );
     }
@@ -72,7 +75,8 @@ namespace gamescope
     ///////////////////
 
     OwningRc<CVulkanTexture> CBufferMemoizer::LookupVulkanTexture( wlr_buffer *pBuffer, uint64_t uSurfaceId,
-        std::span<const pixman_box32_t> damage, std::vector<pixman_box32_t> &uploadDamage )
+        uint64_t uMappingGeneration, std::span<const pixman_box32_t> damage,
+        std::vector<pixman_box32_t> &uploadDamage )
     {
         std::scoped_lock lock{ m_mutBufferMemos };
 
@@ -83,7 +87,7 @@ namespace gamescope
         for ( auto &entry : m_BufferMemos )
         {
             CBufferMemo &memo = entry.second;
-            if ( memo.IsCpuBacked() && memo.IsForSurface( uSurfaceId ) )
+            if ( memo.IsCpuBacked() && memo.IsForMapping( uSurfaceId, uMappingGeneration ) )
                 memo.AddDamage( damage );
         }
 
@@ -94,10 +98,12 @@ namespace gamescope
         CBufferMemo &memo = iter->second;
         if ( memo.IsCpuBacked() )
         {
-            // A wl_buffer may move between surfaces. A full refresh is the
-            // conservative transition because their damage histories differ.
-            if ( !memo.IsForSurface( uSurfaceId ) )
-                memo.ResetForSurface( uSurfaceId, pBuffer->width, pBuffer->height );
+            // A wl_buffer may move between surfaces or return after its
+            // surface mapping changed. A full refresh is conservative because
+            // the accumulated damage is in the previous buffer coordinate space.
+            if ( !memo.IsForMapping( uSurfaceId, uMappingGeneration ) )
+                memo.ResetForMapping( uSurfaceId, uMappingGeneration,
+                    pBuffer->width, pBuffer->height );
             uploadDamage = memo.TakeDamage();
         }
 
@@ -113,7 +119,7 @@ namespace gamescope
     }
 
     void CBufferMemoizer::MemoizeBuffer( wlr_buffer *pBuffer, OwningRc<CVulkanTexture> pTexture,
-        uint64_t uSurfaceId, bool bCpuBacked )
+        uint64_t uSurfaceId, uint64_t uMappingGeneration, bool bCpuBacked )
     {
         memo_log.debugf( "Memoizing new buffer: wlr_buffer %p -> texture: %p", pBuffer, pTexture.get() );
 
@@ -128,7 +134,8 @@ namespace gamescope
             std::scoped_lock lock{ m_mutBufferMemos };
             auto [ iter, bSuccess ] = m_BufferMemos.emplace( std::piecewise_construct,
                 std::forward_as_tuple( pBuffer ),
-                std::forward_as_tuple( this, pBuffer, std::move( pTexture ), uSurfaceId, bCpuBacked ) );
+                std::forward_as_tuple( this, pBuffer, std::move( pTexture ), uSurfaceId,
+                    uMappingGeneration, bCpuBacked ) );
 
             assert( bSuccess );
             pMemo = &iter->second;

@@ -1,5 +1,6 @@
 #include "commit_fence.hpp"
 #include "gamescope-control-client-protocol.h"
+#include "surface_damage_mapping.hpp"
 #include "viewporter-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
@@ -146,6 +147,36 @@ void fencedControl()
 		"signaled fence must become ready within the bound" );
 	close( epoll );
 	close( fence );
+
+	const gamescope::SurfaceDamageMapping base = {
+		.buffer_width = 64,
+		.buffer_height = 64,
+		.scale = 1,
+		.transform = WL_OUTPUT_TRANSFORM_NORMAL,
+		.viewport_has_src = false,
+		.viewport_has_dst = false,
+		.viewport_src_x = 0.0,
+		.viewport_src_y = 0.0,
+		.viewport_src_width = 0.0,
+		.viewport_src_height = 0.0,
+		.viewport_dst_width = 0,
+		.viewport_dst_height = 0,
+	};
+	auto changed = base;
+	changed.viewport_has_src = true;
+	changed.viewport_src_x = 16.0;
+	changed.viewport_src_width = 32.0;
+	check( base != changed, "viewport source must invalidate pooled damage coordinates" );
+	changed = base;
+	changed.viewport_has_dst = true;
+	changed.viewport_dst_width = 32;
+	check( base != changed, "viewport destination must invalidate pooled damage coordinates" );
+	changed = base;
+	changed.scale = 2;
+	check( base != changed, "buffer scale must invalidate pooled damage coordinates" );
+	changed = base;
+	changed.transform = WL_OUTPUT_TRANSFORM_90;
+	check( base != changed, "buffer transform must invalidate pooled damage coordinates" );
 }
 
 struct Client

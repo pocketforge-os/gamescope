@@ -236,6 +236,26 @@ std::optional<ResListEntry_t> PrepareCommit( struct wlr_surface *surf, struct wl
 
 	bool bExplicitSync = wl_surf->pSyncobjSurface && wl_surf->pSyncobjSurface->HasExplicitSync();
 
+	const gamescope::SurfaceDamageMapping damageMapping = {
+		.buffer_width = surf->current.buffer_width,
+		.buffer_height = surf->current.buffer_height,
+		.scale = surf->current.scale,
+		.transform = surf->current.transform,
+		.viewport_has_src = surf->current.viewport.has_src,
+		.viewport_has_dst = surf->current.viewport.has_dst,
+		.viewport_src_x = surf->current.viewport.has_src ? surf->current.viewport.src.x : 0.0,
+		.viewport_src_y = surf->current.viewport.has_src ? surf->current.viewport.src.y : 0.0,
+		.viewport_src_width = surf->current.viewport.has_src ? surf->current.viewport.src.width : 0.0,
+		.viewport_src_height = surf->current.viewport.has_src ? surf->current.viewport.src.height : 0.0,
+		.viewport_dst_width = surf->current.viewport.has_dst ? surf->current.viewport.dst_width : 0,
+		.viewport_dst_height = surf->current.viewport.has_dst ? surf->current.viewport.dst_height : 0,
+	};
+	if ( !wl_surf->damage_mapping || *wl_surf->damage_mapping != damageMapping )
+	{
+		wl_surf->damage_mapping = damageMapping;
+		wl_surf->damage_mapping_generation++;
+	}
+
 	std::shared_ptr<gamescope::CAcquireTimelinePoint> pAcquirePoint;
 	std::shared_ptr<gamescope::CReleaseTimelinePoint> pReleasePoint;
 	if ( bExplicitSync )
@@ -278,6 +298,7 @@ std::optional<ResListEntry_t> PrepareCommit( struct wlr_surface *surf, struct wl
 			return std::vector<pixman_box32_t>{ rectangles, rectangles + count };
 		}(),
 		wl_surf->damage_tracking_id,
+		wl_surf->damage_mapping_generation,
 		std::move( pAcquirePoint ),
 		std::move( pReleasePoint )
 	};

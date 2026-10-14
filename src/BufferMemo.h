@@ -27,7 +27,7 @@ namespace gamescope
     {
     public:
         CBufferMemo( CBufferMemoizer *pMemoizer, wlr_buffer *pBuffer, OwningRc<CVulkanTexture> pTexture,
-            uint64_t uSurfaceId, bool bCpuBacked );
+            uint64_t uSurfaceId, uint64_t uMappingGeneration, bool bCpuBacked );
         ~CBufferMemo();
 
         void Finalize();
@@ -37,10 +37,14 @@ namespace gamescope
         const OwningRc<CVulkanTexture> &GetVulkanTexture() const { return m_pVulkanTexture; }
 
         bool IsCpuBacked() const { return m_bCpuBacked; }
-        bool IsForSurface( uint64_t uSurfaceId ) const { return m_uSurfaceId == uSurfaceId; }
+        bool IsForMapping( uint64_t uSurfaceId, uint64_t uMappingGeneration ) const
+        {
+            return m_uSurfaceId == uSurfaceId && m_uMappingGeneration == uMappingGeneration;
+        }
         void AddDamage( std::span<const pixman_box32_t> damage );
         std::vector<pixman_box32_t> TakeDamage();
-        void ResetForSurface( uint64_t uSurfaceId, int nWidth, int nHeight );
+        void ResetForMapping( uint64_t uSurfaceId, uint64_t uMappingGeneration,
+            int nWidth, int nHeight );
 
         void OnBufferDestroyed( void *pUserData );
     private:
@@ -53,6 +57,7 @@ namespace gamescope
         // determine when we give the texture/buffer back to the app.
         OwningRc<CVulkanTexture> m_pVulkanTexture;
         uint64_t m_uSurfaceId = 0;
+        uint64_t m_uMappingGeneration = 0;
         bool m_bCpuBacked = false;
         pixman_region32_t m_PendingDamage;
     };
@@ -62,11 +67,12 @@ namespace gamescope
     public:
         // Must return an OwningRc for the locking to make sense and not deadlock.
         OwningRc<CVulkanTexture> LookupVulkanTexture( wlr_buffer *pBuffer, uint64_t uSurfaceId,
-            std::span<const pixman_box32_t> damage, std::vector<pixman_box32_t> &uploadDamage );
+            uint64_t uMappingGeneration, std::span<const pixman_box32_t> damage,
+            std::vector<pixman_box32_t> &uploadDamage );
         void RequeueDamage( wlr_buffer *pBuffer, std::span<const pixman_box32_t> damage );
 
         void MemoizeBuffer( wlr_buffer *pBuffer, OwningRc<CVulkanTexture> pTexture,
-            uint64_t uSurfaceId, bool bCpuBacked );
+            uint64_t uSurfaceId, uint64_t uMappingGeneration, bool bCpuBacked );
         void UnmemoizeBuffer( wlr_buffer *pBuffer );
     private:
         mutable std::mutex m_mutBufferMemos;

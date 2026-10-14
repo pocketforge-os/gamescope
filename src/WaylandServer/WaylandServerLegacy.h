@@ -6,6 +6,7 @@
 #include <optional>
 #include <vector>
 #include "vulkan_include.h"
+#include "surface_damage_mapping.hpp"
 
 
 #include "wlr_begin.hpp"
@@ -51,6 +52,8 @@ struct wlserver_wl_surface_info
 
 	uint64_t sequence = 0;
 	uint64_t damage_tracking_id = 0;
+	uint64_t damage_mapping_generation = 0;
+	std::optional<gamescope::SurfaceDamageMapping> damage_mapping;
 	std::vector<struct wl_resource*> pending_presentation_feedbacks;
 
 	std::vector<struct wl_resource *> gamescope_swapchains;
