@@ -373,7 +373,7 @@ enum class DamageCoordinates
 };
 
 void present( Client &client, Buffer &buffer, DamageCoordinates coordinates = DamageCoordinates::Buffer,
-	bool partial = false )
+	bool partial = false, bool requestFrame = true )
 {
 	client.frameDone = false;
 	buffer.released = false;
@@ -386,8 +386,11 @@ void present( Client &client, Buffer &buffer, DamageCoordinates coordinates = Da
 		wl_surface_damage_buffer( client.surface, x, y, width, height );
 	else
 		wl_surface_damage( client.surface, x, y, width, height );
-	wl_callback *callback = wl_surface_frame( client.surface );
-	wl_callback_add_listener( callback, &frameListener, &client );
+	if ( requestFrame )
+	{
+		wl_callback *callback = wl_surface_frame( client.surface );
+		wl_callback_add_listener( callback, &frameListener, &client );
+	}
 	wl_surface_commit( client.surface );
 	check( wl_display_flush( client.display ) >= 0 || errno == EAGAIN,
 		"flush committed frame" );
@@ -470,6 +473,39 @@ bool runReuseCase( Client &client, const char *screenshotPath,
 	return captureShowsBlue( client, screenshotPath, partial );
 }
 
+bool runBurstCase( Client &client, const char *screenshotPath )
+{
+	Buffer buffers[] = {
+		makeBuffer( client, 0x00ff0000u ),
+		makeBuffer( client, 0x0000ff00u ),
+	};
+	armBuffer( buffers[0] );
+	armBuffer( buffers[1] );
+
+	constexpr int commitCount = 13;
+	for ( int frame = 0; frame < commitCount; frame++ )
+	{
+		Buffer &buffer = buffers[frame % 2];
+		if ( !buffer.released )
+			check( dispatchUntilFlag( client, buffer.released, std::chrono::seconds{ 5 } ),
+				"pooled burst buffer was not released for reuse" );
+
+		const uint32_t color = frame == commitCount - 1
+			? 0x000000ffu
+			: ( uint32_t( 16 + frame * 12 ) << 16 ) |
+				( uint32_t( 192 - frame * 8 ) << 8 );
+		std::fill_n( static_cast<uint32_t *>( buffer.pixels ), kWidth * kHeight, color );
+		const bool finalCommit = frame == commitCount - 1;
+		present( client, buffer, DamageCoordinates::Buffer, false, finalCommit );
+		if ( !finalCommit )
+			usleep( 50'000 );
+	}
+
+	check( dispatchUntil( client, &Client::frameDone, std::chrono::milliseconds{ 750 } ),
+		"last two-buffer burst commit stayed unpresented past the bounded wait" );
+	return captureShowsBlue( client, screenshotPath, false );
+}
+
 int runClient( const char *screenshotPath )
 {
 	Client client;
@@ -538,6 +574,8 @@ int runClient( const char *screenshotPath )
 		}
 	}
 	check( reuseCasesPassed, "reused wl_shm buffers did not upload their latest damage" );
+	check( runBurstCase( client, screenshotPath ),
+		"screenshot did not contain the last two-buffer burst commit" );
 	writeResult( "PASS\n" );
 	while ( g_holdAfterResult ) pause();
 
