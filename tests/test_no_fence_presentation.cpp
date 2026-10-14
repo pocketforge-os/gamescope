@@ -270,6 +270,7 @@ struct Buffer
 	void *pixels = MAP_FAILED;
 	wl_shm_pool *pool = nullptr;
 	wl_buffer *buffer = nullptr;
+	bool released = true;
 
 	Buffer() = default;
 	Buffer( const Buffer & ) = delete;
@@ -279,6 +280,7 @@ struct Buffer
 		, pixels( std::exchange( other.pixels, MAP_FAILED ) )
 		, pool( std::exchange( other.pool, nullptr ) )
 		, buffer( std::exchange( other.buffer, nullptr ) )
+		, released( other.released )
 	{
 	}
 
@@ -290,6 +292,13 @@ struct Buffer
 		if ( fd >= 0 ) close( fd );
 	}
 };
+
+void bufferRelease( void *data, wl_buffer * )
+{
+	static_cast<Buffer *>( data )->released = true;
+}
+
+const wl_buffer_listener bufferListener = { .release = bufferRelease };
 
 Buffer makeBuffer( Client &client, uint32_t color )
 {
@@ -308,16 +317,118 @@ Buffer makeBuffer( Client &client, uint32_t color )
 	return result;
 }
 
-void present( Client &client, wl_buffer *buffer )
+void armBuffer( Buffer &buffer )
+{
+	wl_buffer_add_listener( buffer.buffer, &bufferListener, &buffer );
+}
+
+bool dispatchUntilFlag( Client &client, bool &flag, std::chrono::milliseconds timeout )
+{
+	const auto deadline = std::chrono::steady_clock::now() + timeout;
+	while ( !flag )
+	{
+		if ( wl_display_dispatch_pending( client.display ) < 0 ) return false;
+		if ( flag ) return true;
+		if ( wl_display_flush( client.display ) < 0 && errno != EAGAIN ) return false;
+		const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+			deadline - std::chrono::steady_clock::now() );
+		if ( remaining.count() <= 0 ) return false;
+		pollfd descriptor = {
+			.fd = wl_display_get_fd( client.display ),
+			.events = POLLIN,
+			.revents = 0,
+		};
+		const int result = poll( &descriptor, 1, int( remaining.count() ) );
+		if ( result <= 0 || !( descriptor.revents & POLLIN ) ) return false;
+		if ( wl_display_dispatch( client.display ) < 0 ) return false;
+	}
+	return true;
+}
+
+enum class DamageCoordinates
+{
+	Surface,
+	Buffer,
+};
+
+void present( Client &client, Buffer &buffer, DamageCoordinates coordinates = DamageCoordinates::Buffer,
+	bool partial = false )
 {
 	client.frameDone = false;
-	wl_surface_attach( client.surface, buffer, 0, 0 );
-	wl_surface_damage_buffer( client.surface, 0, 0, kWidth, kHeight );
+	buffer.released = false;
+	wl_surface_attach( client.surface, buffer.buffer, 0, 0 );
+	const int x = partial ? kWidth / 4 : 0;
+	const int y = partial ? kHeight / 4 : 0;
+	const int width = partial ? kWidth / 2 : kWidth;
+	const int height = partial ? kHeight / 2 : kHeight;
+	if ( coordinates == DamageCoordinates::Buffer )
+		wl_surface_damage_buffer( client.surface, x, y, width, height );
+	else
+		wl_surface_damage( client.surface, x, y, width, height );
 	wl_callback *callback = wl_surface_frame( client.surface );
 	wl_callback_add_listener( callback, &frameListener, &client );
 	wl_surface_commit( client.surface );
 	check( wl_display_flush( client.display ) >= 0 || errno == EAGAIN,
 		"flush committed frame" );
+}
+
+bool captureShowsBlue( Client &client, const char *screenshotPath, bool partial )
+{
+	client.screenshotDone = false;
+	client.screenshotPath = screenshotPath;
+	gamescope_control_take_screenshot( client.control, screenshotPath,
+		GAMESCOPE_CONTROL_SCREENSHOT_TYPE_SCREEN_BUFFER, 0 );
+	check( dispatchUntil( client, &Client::screenshotDone, std::chrono::seconds{ 5 } ),
+		"capture the presented screen buffer" );
+
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+	unsigned char *pixels = stbi_load( screenshotPath, &width, &height, &channels, 4 );
+	check( pixels && width == kWidth && height == kHeight,
+		"decode the 64x64 presented frame" );
+	const unsigned char *center = pixels + ( ( height / 2 ) * width + width / 2 ) * 4;
+	const unsigned char *corner = pixels + ( ( height / 8 ) * width + width / 8 ) * 4;
+	const bool centerBlue = center[0] < 64 && center[1] < 64 && center[2] > 192;
+	const bool cornerRed = corner[0] > 192 && corner[1] < 64 && corner[2] < 64;
+	stbi_image_free( pixels );
+	unlink( screenshotPath );
+	return centerBlue && ( !partial || cornerRed );
+}
+
+bool runReuseCase( Client &client, const char *screenshotPath,
+	DamageCoordinates coordinates, bool partial )
+{
+	Buffer buffers[] = {
+		makeBuffer( client, 0x00ff0000u ),
+		makeBuffer( client, 0x0000ff00u ),
+	};
+	armBuffer( buffers[0] );
+	armBuffer( buffers[1] );
+
+	present( client, buffers[0] );
+	check( dispatchUntil( client, &Client::frameDone, std::chrono::seconds{ 5 } ),
+		"present first pooled buffer" );
+	present( client, buffers[1] );
+	check( dispatchUntil( client, &Client::frameDone, std::chrono::seconds{ 5 } ),
+		"present second pooled buffer" );
+	check( dispatchUntilFlag( client, buffers[0].released, std::chrono::seconds{ 5 } ),
+		"first pooled buffer was not released for reuse" );
+
+	uint32_t *pixels = static_cast<uint32_t *>( buffers[0].pixels );
+	if ( partial )
+	{
+		for ( int y = kHeight / 4; y < 3 * kHeight / 4; y++ )
+			std::fill_n( pixels + y * kWidth + kWidth / 4, kWidth / 2, 0x000000ffu );
+	}
+	else
+	{
+		std::fill_n( pixels, kWidth * kHeight, 0x000000ffu );
+	}
+	present( client, buffers[0], coordinates, partial );
+	check( dispatchUntil( client, &Client::frameDone, std::chrono::seconds{ 5 } ),
+		"present reused pooled buffer" );
+	return captureShowsBlue( client, screenshotPath, partial );
 }
 
 int runClient( const char *screenshotPath )
@@ -345,7 +456,8 @@ int runClient( const char *screenshotPath )
 		"receive initial xdg-shell configure" );
 
 	Buffer initial = makeBuffer( client, 0x00ff0000u );
-	present( client, initial.buffer );
+	armBuffer( initial );
+	present( client, initial );
 	const std::string screenshotDirectory = std::string{ screenshotPath }.substr(
 		0, std::string{ screenshotPath }.find_last_of( '/' ) + 1 );
 	const std::string initialScreenshot = screenshotDirectory + "initial.png";
@@ -359,27 +471,29 @@ int runClient( const char *screenshotPath )
 	unlink( initialScreenshot.c_str() );
 
 	Buffer changed = makeBuffer( client, 0x000000ffu );
-	present( client, changed.buffer );
+	armBuffer( changed );
+	present( client, changed );
 	check( dispatchUntil( client, &Client::frameDone, std::chrono::milliseconds{ 750 } ),
 		"changed no-fence frame stayed stale past the bounded wait" );
 
-	client.screenshotDone = false;
-	client.screenshotPath = screenshotPath;
-	gamescope_control_take_screenshot( client.control, screenshotPath,
-		GAMESCOPE_CONTROL_SCREENSHOT_TYPE_SCREEN_BUFFER, 0 );
-	check( dispatchUntil( client, &Client::screenshotDone, std::chrono::seconds{ 5 } ),
-		"capture the presented screen buffer" );
+	check( captureShowsBlue( client, screenshotPath, false ),
+		"presented frame did not contain the changed blue buffer" );
 
-	int width = 0;
-	int height = 0;
-	int channels = 0;
-	unsigned char *pixels = stbi_load( screenshotPath, &width, &height, &channels, 4 );
-	check( pixels && width == kWidth && height == kHeight,
-		"decode the 64x64 presented frame" );
-	const unsigned char *center = pixels + ( ( height / 2 ) * width + width / 2 ) * 4;
-	const bool changedVisible = center[0] < 64 && center[1] < 64 && center[2] > 192;
-	stbi_image_free( pixels );
-	check( changedVisible, "presented frame did not contain the changed blue buffer" );
+	bool reuseCasesPassed = true;
+	for ( DamageCoordinates coordinates : { DamageCoordinates::Surface, DamageCoordinates::Buffer } )
+	{
+		for ( bool partial : { false, true } )
+		{
+			const bool passed = runReuseCase( client, screenshotPath, coordinates, partial );
+			if ( !passed )
+				std::fprintf( stderr,
+					"no-fence-presentation: stale reused wl_shm buffer (%s, %s damage)\n",
+					coordinates == DamageCoordinates::Buffer ? "damage_buffer" : "damage",
+					partial ? "partial" : "full" );
+			reuseCasesPassed = reuseCasesPassed && passed;
+		}
+	}
+	check( reuseCasesPassed, "reused wl_shm buffers did not upload their latest damage" );
 	writeResult( "PASS\n" );
 	while ( g_holdAfterResult ) pause();
 
