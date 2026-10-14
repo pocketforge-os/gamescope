@@ -2567,6 +2567,17 @@ paint_all( global_focus_t *pFocus, bool async )
 	update_color_mgmt();
 
 	paintID++;
+	if ( gamescope::commit_trace::enabled )
+	{
+		const gamescope::Rc<commit_t> &traceHeldCommit = g_HeldCommits[ HELD_COMMIT_BASE ];
+		gamescope::commit_trace::log( "composite_select",
+			"paint_id=%lld surface=%p win_seq=%lu commit_id=%lu async=%d",
+			paintID,
+			traceHeldCommit ? traceHeldCommit->surf : nullptr,
+			traceHeldCommit ? traceHeldCommit->win_seq : 0,
+			traceHeldCommit ? traceHeldCommit->commitID : 0,
+			async );
+	}
 	gpuvis_trace_begin_ctx_printf( paintID, "paint_all" );
 	steamcompmgr_win_t	*w;
 	steamcompmgr_win_t	*overlay;
@@ -2901,6 +2912,14 @@ paint_all( global_focus_t *pFocus, bool async )
 
 	if ( oScreenshotInfo )
 	{
+		const gamescope::Rc<commit_t> &screenshotCommit = g_HeldCommits[ HELD_COMMIT_BASE ];
+		GAMESCOPE_COMMIT_TRACE( "screenshot_frame",
+			"surface=%p win_seq=%lu commit_id=%lu type=%u path=%s",
+			screenshotCommit ? screenshotCommit->surf : nullptr,
+			screenshotCommit ? screenshotCommit->win_seq : 0,
+			screenshotCommit ? screenshotCommit->commitID : 0,
+			static_cast<unsigned int>( oScreenshotInfo->eScreenshotType ),
+			oScreenshotInfo->szScreenshotPath.c_str() );
 		std::filesystem::path path = std::filesystem::path{ oScreenshotInfo->szScreenshotPath };
 
 		uint32_t drmCaptureFormat = DRM_FORMAT_INVALID;
@@ -6945,6 +6964,9 @@ bool handle_done_commit( steamcompmgr_win_t *w, xwayland_ctx_t *ctx, uint64_t co
 			w->commit_queue[ j ]->earliest_present_time = earliestPresentTime;
 			w->commit_queue[ j ]->present_margin = earliestPresentTime - earliestLatchTime;
 			bFoundWindow = true;
+			GAMESCOPE_COMMIT_TRACE( "done_drain",
+				"surface=%p win_seq=%lu commit_id=%lu outcome=handled queue_index=%u",
+				w->commit_queue[ j ]->surf, w->seq, commitID, j );
 
 			// Window just got a new available commit, determine if that's worth a repaint
 
@@ -6987,7 +7009,12 @@ bool handle_done_commit( steamcompmgr_win_t *w, xwayland_ctx_t *ctx, uint64_t co
 				if ( w == pFocus->focusWindow && !w->isSteamStreamingClient )
 				{
 					if ( !cv_paint_debug_pause_base_plane )
+					{
 						g_HeldCommits[ HELD_COMMIT_BASE ] = w->commit_queue[ j ];
+						GAMESCOPE_COMMIT_TRACE( "held_select",
+							"surface=%p win_seq=%lu commit_id=%lu role=focus",
+							w->commit_queue[ j ]->surf, w->seq, commitID );
+					}
 					hasRepaint = true;
 
 					focusWindow_engine = w->engineName;
@@ -7002,7 +7029,12 @@ bool handle_done_commit( steamcompmgr_win_t *w, xwayland_ctx_t *ctx, uint64_t co
 				if ( w->isSteamStreamingClientVideo && pFocus->focusWindow && pFocus->focusWindow->isSteamStreamingClient )
 				{
 					if ( !cv_paint_debug_pause_base_plane )
+					{
 						g_HeldCommits[ HELD_COMMIT_BASE ] = w->commit_queue[ j ];
+						GAMESCOPE_COMMIT_TRACE( "held_select",
+							"surface=%p win_seq=%lu commit_id=%lu role=streaming",
+							w->commit_queue[ j ]->surf, w->seq, commitID );
+					}
 					hasRepaint = true;
 				}
 			}
@@ -7069,6 +7101,9 @@ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vb
 
 		if (entry.fifo && (!entry_vblank || fifo_win_seqs.count(entry.winSeq) > 0))
 		{
+			GAMESCOPE_COMMIT_TRACE( "done_drain",
+				"surface=%p win_seq=%lu commit_id=%lu outcome=defer_fifo lane=xwayland",
+				nullptr, entry.winSeq, entry.commitID );
 			commits_before_their_time.push_back( entry );
 			continue;
 		}
@@ -7081,6 +7116,9 @@ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vb
 
 		if ( entry.desiredPresentTime > next_refresh_time )
 		{
+			GAMESCOPE_COMMIT_TRACE( "done_drain",
+				"surface=%p win_seq=%lu commit_id=%lu outcome=defer_time lane=xwayland",
+				nullptr, entry.winSeq, entry.commitID );
 			commits_before_their_time.push_back( entry );
 			continue;
 		}
@@ -7126,6 +7164,9 @@ void handle_done_commits_xdg( bool vblank, uint64_t vblank_idx )
 	{
 		if (entry.fifo && (!vblank || fifo_win_seqs.count(entry.winSeq) > 0))
 		{
+			GAMESCOPE_COMMIT_TRACE( "done_drain",
+				"surface=%p win_seq=%lu commit_id=%lu outcome=defer_fifo lane=xdg",
+				nullptr, entry.winSeq, entry.commitID );
 			commits_before_their_time.push_back( entry );
 			continue;
 		}
@@ -7138,6 +7179,9 @@ void handle_done_commits_xdg( bool vblank, uint64_t vblank_idx )
 
 		if ( entry.desiredPresentTime > next_refresh_time )
 		{
+			GAMESCOPE_COMMIT_TRACE( "done_drain",
+				"surface=%p win_seq=%lu commit_id=%lu outcome=defer_time lane=xdg",
+				nullptr, entry.winSeq, entry.commitID );
 			commits_before_their_time.push_back( entry );
 			break;
 		}
@@ -7410,6 +7454,18 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 		return;
 	}
 
+	if ( gamescope::commit_trace::enabled )
+	{
+		struct wlr_dmabuf_attributes traceDmabuf = {};
+		const bool traceHasDmabuf = wlr_buffer_get_dmabuf( buf, &traceDmabuf );
+		gamescope::commit_trace::log( "wlserver_enqueue",
+			"surface=%p win_seq=%lu commit_id=%lu buffer=%p kind=%s dmabuf_fd=%d size=%dx%d",
+			newCommit->surf, newCommit->win_seq, newCommit->commitID, newCommit->buf,
+			traceHasDmabuf ? "dmabuf" : "shm-or-cpu",
+			traceHasDmabuf ? traceDmabuf.fd[ 0 ] : -1,
+			buf->width, buf->height );
+	}
+
 	gamescope::commit_fence::Result commitFence = gamescope::commit_fence::error( EINVAL );
 	global_focus_t *pCurrentFocus = GetCurrentFocus();
 
@@ -7541,6 +7597,20 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 	const bool nudgeAfterEnqueue = gamescope::commit_fence::requiresPostEnqueueNudge(
 		commitFence.action );
 	{
+		if ( gamescope::commit_trace::enabled )
+		{
+			const char *traceFenceAction = "error";
+			switch ( commitFence.action )
+			{
+				case gamescope::commit_fence::Action::Ready: traceFenceAction = "ready"; break;
+				case gamescope::commit_fence::Action::Wait: traceFenceAction = "wait"; break;
+				case gamescope::commit_fence::Action::Error: traceFenceAction = "error"; break;
+			}
+			gamescope::commit_trace::log( "fence_action",
+				"surface=%p win_seq=%lu commit_id=%lu action=%s fd=%d error=%d",
+				newCommit->surf, newCommit->win_seq, newCommit->commitID,
+				traceFenceAction, commitFence.fd, commitFence.error );
+		}
 		switch ( commitFence.action )
 		{
 			case gamescope::commit_fence::Action::Ready:

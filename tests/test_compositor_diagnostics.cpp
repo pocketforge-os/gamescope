@@ -16,6 +16,9 @@ int main()
 	assert( should_log_atomic_properties( 8 ) );
 	assert( !should_log_atomic_properties( 0 ) );
 	assert( !should_log_atomic_properties( 9 ) );
+	assert( gamescope::commit_trace::should_write( gamescope::commit_trace::max_events - 1 ) );
+	assert( gamescope::commit_trace::should_write( gamescope::commit_trace::max_events ) );
+	assert( !gamescope::commit_trace::should_write( gamescope::commit_trace::max_events + 1 ) );
 
 	unsetenv( "GAMESCOPE_COMPOSITOR_DIAGNOSTICS" );
 	assert( !enabled() );

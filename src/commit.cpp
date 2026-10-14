@@ -2,6 +2,7 @@
 #include "rendervulkan.hpp"
 #include "steamcompmgr.hpp"
 #include "commit.h"
+#include "compositor_diagnostics.hpp"
 
 #include "gpuvis_trace_utils.h"
 
@@ -80,15 +81,18 @@ void commit_t::Signal()
     // TODO: Move this so it's called in the main loop.
     // Instead of looping over all the windows like before.
     // When we get the new IWaitable stuff in there.
-    {
-        std::unique_lock< std::mutex > lock( m_pDoneCommits->listCommitsDoneLock );
-        m_pDoneCommits->listCommitsDone.push_back( CommitDoneEntry_t{
+	{
+		std::unique_lock< std::mutex > lock( m_pDoneCommits->listCommitsDoneLock );
+		m_pDoneCommits->listCommitsDone.push_back( CommitDoneEntry_t{
             .winSeq = win_seq,
             .commitID = commitID,
             .desiredPresentTime = desired_present_time,
             .fifo = fifo,
-        } );
-    }
+		} );
+		GAMESCOPE_COMMIT_TRACE( "done_insert",
+			"surface=%p win_seq=%lu commit_id=%lu fifo=%d done_depth=%zu",
+			surf, win_seq, commitID, fifo, m_pDoneCommits->listCommitsDone.size() );
+	}
 
     if ( m_bMangoNudge )
         mangoapp_update( uint64_t(~0ull), frametime, uint64_t(~0ull) );
