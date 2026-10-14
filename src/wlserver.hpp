@@ -52,6 +52,7 @@ struct ResListEntry_t {
 	std::optional<uint32_t> present_id;
 	uint64_t desired_present_time;
 	std::vector<pixman_box32_t> bufferDamage;
+	uint64_t damageTrackingId;
 	std::shared_ptr<gamescope::CAcquireTimelinePoint> pAcquirePoint;
 	std::shared_ptr<gamescope::CReleaseTimelinePoint> pReleasePoint;
 };

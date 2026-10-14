@@ -50,6 +50,7 @@ struct wlserver_wl_surface_info
 	std::optional<VkPresentModeKHR> oCurrentPresentMode;
 
 	uint64_t sequence = 0;
+	uint64_t damage_tracking_id = 0;
 	std::vector<struct wl_resource*> pending_presentation_feedbacks;
 
 	std::vector<struct wl_resource *> gamescope_swapchains;
