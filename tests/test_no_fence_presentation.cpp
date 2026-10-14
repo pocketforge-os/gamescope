@@ -446,7 +446,9 @@ bool runReuseCase( Client &client, const char *screenshotPath,
 		}
 		else
 		{
-			std::fill_n( pixels, kWidth * kHeight, 0x001fu );
+			std::fill_n( pixels, kWidth * kHeight, 0xf800u );
+			for ( int y = kHeight / 4; y < 3 * kHeight / 4; y++ )
+				std::fill_n( pixels + y * kWidth + kWidth / 4, kWidth / 2, 0x001fu );
 		}
 	}
 	else
