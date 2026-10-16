@@ -257,6 +257,7 @@ namespace gamescope
 	{
 		if ( UsingTimerFD() )
 		{
+			ITimerWaitable::OnPollIn();
 			std::unique_lock lock( m_ScheduleMutex );
 
 			// Disarm the timer if it was armed.
@@ -407,4 +408,3 @@ gamescope::CVBlankTimer &GetVBlankTimer()
     static gamescope::CVBlankTimer s_VBlankTimer;
     return s_VBlankTimer;
 }
-
