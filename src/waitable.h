@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cerrno>
 #include <thread>
 #include <stdint.h>
 #include <fcntl.h>
@@ -182,6 +183,23 @@ namespace gamescope
             ArmTimer( 0ul, false );
         }
 
+		void OnPollIn() override
+		{
+			uint64_t expirations = 0;
+			ssize_t result;
+			do
+			{
+				result = read( m_nFD, &expirations, sizeof( expirations ) );
+			}
+			while ( result < 0 && errno == EINTR );
+
+			if ( result != sizeof( expirations ) &&
+				!( result < 0 && errno == EAGAIN ) )
+			{
+				g_WaitableLog.errorf_errno( "Failed to consume timerfd expiration" );
+			}
+		}
+
         int GetFD()
         {
             return m_nFD;
@@ -200,6 +218,7 @@ namespace gamescope
 
         void OnPollIn() final
         {
+			ITimerWaitable::OnPollIn();
             m_fnPollFunc();
         }
     private:
@@ -485,4 +504,3 @@ namespace gamescope
 
 
 }
-
