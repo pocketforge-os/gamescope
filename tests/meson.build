@@ -165,6 +165,13 @@ test_stop_thread = executable(
 )
 test('stop-thread', test_stop_thread)
 
+test_timerfd_idle = executable(
+	'test_timerfd_idle',
+	'test_timerfd_idle.cpp',
+	include_directories: [srcdir],
+)
+test('timerfd-idle', test_timerfd_idle)
+
 test_vulkan_device_extensions = executable(
 	'test_vulkan_device_extensions',
 	'test_vulkan_device_extensions.cpp',
