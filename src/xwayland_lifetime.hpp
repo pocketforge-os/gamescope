@@ -12,4 +12,12 @@ namespace gamescope::xwayland_lifetime
 // mode uses 10 s (xwayland/xwayland.c).
 inline constexpr int terminate_delay_seconds = 10;
 
+// wlroots copies the options but resets terminate_delay to 0 when the build's
+// Xwayland package does not advertise have_terminate_delay
+// (xwayland/server.c). The delay only helps if it survived creation.
+inline constexpr bool delay_effective( int requested, int effective )
+{
+	return requested > 0 && effective == requested;
+}
+
 } // namespace gamescope::xwayland_lifetime

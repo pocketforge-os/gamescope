@@ -73,3 +73,32 @@ TEST_CASE( "wlserver.cpp creates Xwayland with the terminate delay" )
 	REQUIRE_FALSE( source.empty() );
 	REQUIRE( options_set_terminate_delay( source ) );
 }
+
+TEST_CASE( "the delay counts as effective only when wlroots kept it" )
+{
+	using gamescope::xwayland_lifetime::delay_effective;
+	constexpr int requested = gamescope::xwayland_lifetime::terminate_delay_seconds;
+	// Feature present: wlroots keeps the requested value.
+	REQUIRE( delay_effective( requested, requested ) );
+	// Feature absent: wlroots resets the option to 0 (xwayland/server.c).
+	REQUIRE_FALSE( delay_effective( requested, 0 ) );
+	// A zero request is never an effective delay.
+	REQUIRE_FALSE( delay_effective( 0, 0 ) );
+	REQUIRE_FALSE( delay_effective( requested, requested + 1 ) );
+}
+
+TEST_CASE( "wlserver.cpp fails closed when the created server lost the delay" )
+{
+	std::string source = read_file( GAMESCOPE_WLSERVER_SOURCE );
+	std::string_view view = source;
+	size_t create = view.find( "wlr_xwayland_server_create(display, &xwayland_options)" );
+	REQUIRE( create != std::string_view::npos );
+	size_t check = view.find( "delay_effective(", create );
+	REQUIRE( check != std::string_view::npos );
+	// The check must be right after creation (same constructor), read the
+	// effective option from the created server, and abort.
+	std::string_view after = view.substr( check, 600 );
+	REQUIRE( after.find( "xwayland_server->options.terminate_delay" ) != std::string_view::npos );
+	REQUIRE( after.find( "abort()" ) != std::string_view::npos );
+	REQUIRE( check - create < 400 );
+}
