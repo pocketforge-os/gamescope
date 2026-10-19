@@ -57,6 +57,7 @@
 
 #include "wlserver.hpp"
 #include "wayland_security.hpp"
+#include "xwayland_lifetime.hpp"
 #include "xwayland_security.hpp"
 #include "compositor_diagnostics.hpp"
 #include "hdmi.h"
@@ -1966,6 +1967,7 @@ gamescope_xwayland_server_t::gamescope_xwayland_server_t(wl_display *display, in
 		.enable_wm = false,
 		.no_touch_pointer_emulation = g_bNoTouchPointerEmulation,
 		.force_xrandr_emulation = true,
+		.terminate_delay = gamescope::xwayland_lifetime::terminate_delay_seconds,
 	};
 	xwayland_server = wlr_xwayland_server_create(display, &xwayland_options);
 	if ( !xwayland_server || !gamescope::xwayland_security::harden_listeners( xwayland_server->x_fd ) )
