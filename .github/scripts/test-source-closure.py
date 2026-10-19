@@ -75,6 +75,8 @@ class SourceClosureTests(unittest.TestCase):
 			"gamescope:vulkan-device-extensions",
 			"gamescope:commit-fence",
 			"gamescope:no-fence-presentation",
+			"gamescope:timerfd-idle",
+			"gamescope:xwayland-lifetime",
 		]
 		names = gamescope_names + ["libdisplay-info:pocketforge-source-locator"]
 		names.extend(f"libdisplay-info:fixture-{index}" for index in range(64))
@@ -97,7 +99,7 @@ class SourceClosureTests(unittest.TestCase):
 			capture_output=True,
 		)
 		self.assertEqual(positive.returncode, 0, positive.stderr)
-		self.assertIn("registered_gamescope=19", positive.stdout)
+		self.assertIn("registered_gamescope=21", positive.stdout)
 		shrink_negative = subprocess.run(
 			[sys.executable, str(TEST_REGISTRATION)],
 			input=fixture.replace("gamescope:output-staging\n", ""),
