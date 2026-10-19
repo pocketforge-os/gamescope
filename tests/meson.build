@@ -2,6 +2,15 @@ catch2_dep = dependency('catch2-with-main', required: true)
 
 srcdir = '../src'
 
+test_xwayland_lifetime = executable(
+	'test_xwayland_lifetime',
+	'test_xwayland_lifetime.cpp',
+	include_directories: [srcdir],
+	cpp_args: ['-DGAMESCOPE_WLSERVER_SOURCE="@0@"'.format(meson.project_source_root() / 'src' / 'wlserver.cpp')],
+	dependencies: [catch2_dep],
+)
+test('xwayland-lifetime', test_xwayland_lifetime)
+
 test_output_staging = executable(
 	'test_output_staging',
 	[srcdir / 'output_staging.cpp', 'test_output_staging.cpp'],
