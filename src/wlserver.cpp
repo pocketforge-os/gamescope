@@ -1970,6 +1970,11 @@ gamescope_xwayland_server_t::gamescope_xwayland_server_t(wl_display *display, in
 		.terminate_delay = gamescope::xwayland_lifetime::terminate_delay_seconds,
 	};
 	xwayland_server = wlr_xwayland_server_create(display, &xwayland_options);
+	if ( xwayland_server && !gamescope::xwayland_lifetime::delay_effective( xwayland_options.terminate_delay, xwayland_server->options.terminate_delay ) )
+	{
+		wl_log.errorf( "Refusing to start Xwayland without a -terminate delay (wlroots was built without have_terminate_delay)" );
+		abort();
+	}
 	if ( !xwayland_server || !gamescope::xwayland_security::harden_listeners( xwayland_server->x_fd ) )
 	{
 		wl_log.errorf( "Refusing to start Xwayland without hardened listeners" );
