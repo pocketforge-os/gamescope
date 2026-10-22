@@ -2,6 +2,8 @@
 
 #include <cstdlib>
 #include <cstdint>
+#include <thread>
+#include <utility>
 
 namespace gamescope::pipeline_compile_probe
 {
@@ -16,6 +18,21 @@ inline bool enabled()
 {
 	const char *value = std::getenv( "GAMESCOPE_PIPELINE_COMPILE_LOG" );
 	return value && *value && std::atoi( value ) != 0;
+}
+
+inline bool precompile_enabled()
+{
+	const char *value = std::getenv( "GAMESCOPE_PIPELINE_PRECOMPILE" );
+	return value && *value && std::atoi( value ) != 0;
+}
+
+template <typename Function>
+std::jthread start_precompile( Function &&function )
+{
+	if ( !precompile_enabled() )
+		return {};
+
+	return std::jthread( std::forward<Function>( function ) );
 }
 
 constexpr const char *source_name( Source source )

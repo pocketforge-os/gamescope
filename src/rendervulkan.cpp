@@ -336,7 +336,10 @@ bool CVulkanDevice::BInit(VkInstance instance, VkSurfaceKHR surface)
 
 	m_bInitialized = true;
 
-	m_pipelineThread = std::jthread([this](std::stop_token st){compileAllPipelines(st);});
+	// Missing pipelines are compiled by pipeline(). Keep the exhaustive background
+	// warm-up opt-in so an idle compositor does not occupy a CPU with shader work.
+	m_pipelineThread = gamescope::pipeline_compile_probe::start_precompile(
+		[this](std::stop_token st){compileAllPipelines(st);} );
 
 	g_reshadeManager.init(this);
 
