@@ -138,6 +138,53 @@ void test_no_modifier_xr24_accepts_sufficient_optimal_features()
 	CHECK( plan.rejection == Rejection::Accepted );
 }
 
+void test_no_modifier_xr24_rejects_each_missing_optimal_feature()
+{
+	const std::array kms = { KmsModifier{ kFormat, InvalidModifier } };
+	for ( const FeatureFlags missing : {
+			FeatureSampled,
+			FeatureStorage,
+			FeatureTransferSrc,
+		} )
+	{
+		const OutputPlan plan = chooseNoModifierOutputPlan( {
+			kFormat,
+			kCompositionFeatures & ~missing,
+			kms,
+			{},
+		} );
+		CHECK( plan.mode == OutputMode::Unsupported );
+		CHECK( plan.modifier == InvalidModifier );
+		CHECK( plan.rejection == Rejection::NoOptimalComposition );
+	}
+}
+
+void test_no_modifier_undefined_or_unknown_format_is_unsupported()
+{
+	const std::array kms = { KmsModifier{ kFormat, InvalidModifier } };
+	OutputPlan plan = chooseNoModifierOutputPlan( {
+		kFormat,
+		kCompositionFeatures,
+		kms,
+		{},
+	}, false );
+	CHECK( plan.mode == OutputMode::Unsupported );
+	CHECK( plan.modifier == InvalidModifier );
+	CHECK( plan.rejection == Rejection::NoKmsFormat );
+
+	constexpr uint32_t kUnknownFormat = 0x12345678;
+	const std::array unknownKms = { KmsModifier{ kUnknownFormat, InvalidModifier } };
+	plan = chooseNoModifierOutputPlan( {
+		kUnknownFormat,
+		kCompositionFeatures,
+		unknownKms,
+		{},
+	}, false );
+	CHECK( plan.mode == OutputMode::Unsupported );
+	CHECK( plan.modifier == InvalidModifier );
+	CHECK( plan.rejection == Rejection::NoKmsFormat );
+}
+
 void test_frame_actions_preserve_bypass_screenshot_and_pipewire_source()
 {
 	FrameActions actions = frameActions( OutputMode::Staged, true, false );
@@ -214,6 +261,8 @@ int main()
 	test_staged_rejects_missing_capabilities();
 	test_modifier_present_plans_remain_unchanged();
 	test_no_modifier_xr24_accepts_sufficient_optimal_features();
+	test_no_modifier_xr24_rejects_each_missing_optimal_feature();
+	test_no_modifier_undefined_or_unknown_format_is_unsupported();
 	test_frame_actions_preserve_bypass_screenshot_and_pipewire_source();
 	test_ring_reuse_and_failed_submission();
 	test_staged_barrier_and_ownership_contract();

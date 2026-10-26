@@ -74,6 +74,7 @@ inline constexpr OutputAllocationPolicy outputAllocationPolicy( bool supportsSca
 }
 
 OutputPlan chooseOutputPlan( const PlanInput &input );
+OutputPlan chooseNoModifierOutputPlan( const PlanInput &input, bool hasVulkanFormat = true );
 
 enum class ImageRole
 {
