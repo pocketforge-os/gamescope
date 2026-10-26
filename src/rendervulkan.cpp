@@ -2199,7 +2199,32 @@ static gamescope::output_staging::OutputPlan makeOutputPlan(
 		return { OutputMode::Combined, InvalidModifier, Rejection::Accepted };
 
 	if ( !g_device.supportsModifiers() )
-		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoKmsFormat };
+	{
+		std::vector<KmsModifier> kms;
+		kms.reserve( kmsModifiers.size() );
+		for ( uint64_t modifier : kmsModifiers )
+			kms.push_back( { drmFormat, modifier } );
+
+		const VkFormat vkFormat = DRMFormatToVulkan( drmFormat, false );
+		if ( vkFormat == VK_FORMAT_UNDEFINED )
+		{
+			return chooseNoModifierOutputPlan( {
+				.format = drmFormat,
+				.kmsModifiers = kms,
+			}, false );
+		}
+
+		VkFormatProperties2 formatProps = {
+			.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+		};
+		g_device.vk.GetPhysicalDeviceFormatProperties2( g_device.physDev(), vkFormat, &formatProps );
+
+		return chooseNoModifierOutputPlan( {
+			.format = drmFormat,
+			.optimalFeatures = outputFeatureFlags( formatProps.formatProperties.optimalTilingFeatures ),
+			.kmsModifiers = kms,
+		} );
+	}
 
 	const VkFormat vkFormat = DRMFormatToVulkan( drmFormat, false );
 	if ( vkFormat == VK_FORMAT_UNDEFINED )

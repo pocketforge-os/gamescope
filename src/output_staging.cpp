@@ -66,6 +66,29 @@ OutputPlan chooseOutputPlan( const PlanInput &input )
 		Rejection::NoExportableLinearTransferDst };
 }
 
+OutputPlan chooseNoModifierOutputPlan( const PlanInput &input, bool hasVulkanFormat )
+{
+	if ( !hasVulkanFormat )
+		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoKmsFormat };
+
+	bool hasKmsFormat = false;
+	for ( const KmsModifier &kms : input.kmsModifiers )
+	{
+		if ( kms.format == input.format )
+		{
+			hasKmsFormat = true;
+			break;
+		}
+	}
+	if ( !hasKmsFormat )
+		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoKmsFormat };
+
+	if ( !hasFeatures( input.optimalFeatures, kCompositionFeatures ) )
+		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoOptimalComposition };
+
+	return { OutputMode::Combined, InvalidModifier, Rejection::Accepted };
+}
+
 FrameActions frameActions( OutputMode mode, bool directScanout, bool outputOverride )
 {
 	if ( directScanout )
