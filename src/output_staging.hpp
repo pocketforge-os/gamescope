@@ -43,6 +43,7 @@ enum class Rejection
 {
 	Accepted,
 	NoKmsFormat,
+	NoKmsImplicitModifier,
 	NoOptimalComposition,
 	NoKmsLinearModifier,
 	NoExportableLinearTransferDst,
