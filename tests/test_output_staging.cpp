@@ -138,6 +138,74 @@ void test_no_modifier_xr24_accepts_sufficient_optimal_features()
 	CHECK( plan.rejection == Rejection::Accepted );
 }
 
+void test_no_modifier_rejects_explicit_only_kms_modifiers()
+{
+	const std::array kms = { KmsModifier{ kFormat, kTiledModifier } };
+	const OutputPlan plan = chooseNoModifierOutputPlan( {
+		kFormat,
+		kCompositionFeatures,
+		kms,
+		{},
+	} );
+	CHECK( plan.mode == OutputMode::Unsupported );
+}
+
+void test_no_modifier_rejects_linear_only_kms_modifiers()
+{
+	const std::array kms = { KmsModifier{ kFormat, LinearModifier } };
+	const OutputPlan plan = chooseNoModifierOutputPlan( {
+		kFormat,
+		kCompositionFeatures,
+		kms,
+		{},
+	} );
+	CHECK( plan.mode == OutputMode::Unsupported );
+}
+
+void test_no_modifier_accepts_invalid_modifier_alone_or_mixed()
+{
+	const std::array invalidOnly = { KmsModifier{ kFormat, InvalidModifier } };
+	OutputPlan plan = chooseNoModifierOutputPlan( {
+		kFormat,
+		kCompositionFeatures,
+		invalidOnly,
+		{},
+	} );
+	CHECK( plan.mode == OutputMode::Combined );
+	CHECK( plan.modifier == InvalidModifier );
+	CHECK( plan.rejection == Rejection::Accepted );
+
+	const std::array mixed = {
+		KmsModifier{ kFormat, LinearModifier },
+		KmsModifier{ kFormat, kTiledModifier },
+		KmsModifier{ kFormat, InvalidModifier },
+	};
+	plan = chooseNoModifierOutputPlan( {
+		kFormat,
+		kCompositionFeatures,
+		mixed,
+		{},
+	} );
+	CHECK( plan.mode == OutputMode::Combined );
+	CHECK( plan.modifier == InvalidModifier );
+	CHECK( plan.rejection == Rejection::Accepted );
+}
+
+void test_no_modifier_rejects_invalid_modifier_for_different_format()
+{
+	const std::array kms = {
+		KmsModifier{ kFormat, kTiledModifier },
+		KmsModifier{ kOtherFormat, InvalidModifier },
+	};
+	const OutputPlan plan = chooseNoModifierOutputPlan( {
+		kFormat,
+		kCompositionFeatures,
+		kms,
+		{},
+	} );
+	CHECK( plan.mode == OutputMode::Unsupported );
+}
+
 void test_no_modifier_xr24_rejects_each_missing_optimal_feature()
 {
 	const std::array kms = { KmsModifier{ kFormat, InvalidModifier } };
@@ -261,6 +329,10 @@ int main()
 	test_staged_rejects_missing_capabilities();
 	test_modifier_present_plans_remain_unchanged();
 	test_no_modifier_xr24_accepts_sufficient_optimal_features();
+	test_no_modifier_rejects_explicit_only_kms_modifiers();
+	test_no_modifier_rejects_linear_only_kms_modifiers();
+	test_no_modifier_accepts_invalid_modifier_alone_or_mixed();
+	test_no_modifier_rejects_invalid_modifier_for_different_format();
 	test_no_modifier_xr24_rejects_each_missing_optimal_feature();
 	test_no_modifier_undefined_or_unknown_format_is_unsupported();
 	test_frame_actions_preserve_bypass_screenshot_and_pipewire_source();
