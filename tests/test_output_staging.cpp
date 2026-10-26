@@ -95,6 +95,49 @@ void test_staged_rejects_missing_capabilities()
 	CHECK( plan.rejection == Rejection::NoOptimalComposition );
 }
 
+void test_modifier_present_plans_remain_unchanged()
+{
+	const std::array kms = {
+		KmsModifier{ kFormat, LinearModifier },
+		KmsModifier{ kFormat, kTiledModifier },
+	};
+	const std::array combined = {
+		VulkanModifier{ kFormat, kTiledModifier, kCompositionFeatures, true, false },
+	};
+	OutputPlan plan = chooseOutputPlan( { kFormat, kCompositionFeatures, kms, combined } );
+	CHECK( plan.mode == OutputMode::Combined );
+	CHECK( plan.modifier == kTiledModifier );
+	CHECK( plan.rejection == Rejection::Accepted );
+
+	const std::array staged = {
+		VulkanModifier{ kFormat, LinearModifier, FeatureTransferDst, false, true },
+	};
+	plan = chooseOutputPlan( { kFormat, kCompositionFeatures, kms, staged } );
+	CHECK( plan.mode == OutputMode::Staged );
+	CHECK( plan.modifier == LinearModifier );
+	CHECK( plan.rejection == Rejection::Accepted );
+
+	const std::array invalidOnly = { KmsModifier{ kFormat, InvalidModifier } };
+	plan = chooseOutputPlan( { kFormat, kCompositionFeatures, invalidOnly, staged } );
+	CHECK( plan.mode == OutputMode::Unsupported );
+	CHECK( plan.modifier == InvalidModifier );
+	CHECK( plan.rejection == Rejection::NoKmsLinearModifier );
+}
+
+void test_no_modifier_xr24_accepts_sufficient_optimal_features()
+{
+	const std::array kms = { KmsModifier{ kFormat, InvalidModifier } };
+	const OutputPlan plan = chooseNoModifierOutputPlan( {
+		kFormat,
+		kCompositionFeatures,
+		kms,
+		{},
+	} );
+	CHECK( plan.mode == OutputMode::Combined );
+	CHECK( plan.modifier == InvalidModifier );
+	CHECK( plan.rejection == Rejection::Accepted );
+}
+
 void test_frame_actions_preserve_bypass_screenshot_and_pipewire_source()
 {
 	FrameActions actions = frameActions( OutputMode::Staged, true, false );
@@ -169,6 +212,8 @@ int main()
 	test_combined_is_preferred();
 	test_staged_requires_exact_linear_intersection();
 	test_staged_rejects_missing_capabilities();
+	test_modifier_present_plans_remain_unchanged();
+	test_no_modifier_xr24_accepts_sufficient_optimal_features();
 	test_frame_actions_preserve_bypass_screenshot_and_pipewire_source();
 	test_ring_reuse_and_failed_submission();
 	test_staged_barrier_and_ownership_contract();
