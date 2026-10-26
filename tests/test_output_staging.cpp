@@ -148,6 +148,7 @@ void test_no_modifier_rejects_explicit_only_kms_modifiers()
 		{},
 	} );
 	CHECK( plan.mode == OutputMode::Unsupported );
+	CHECK( plan.rejection == Rejection::NoKmsImplicitModifier );
 }
 
 void test_no_modifier_rejects_linear_only_kms_modifiers()
@@ -160,6 +161,7 @@ void test_no_modifier_rejects_linear_only_kms_modifiers()
 		{},
 	} );
 	CHECK( plan.mode == OutputMode::Unsupported );
+	CHECK( plan.rejection == Rejection::NoKmsImplicitModifier );
 }
 
 void test_no_modifier_accepts_invalid_modifier_alone_or_mixed()
@@ -204,6 +206,7 @@ void test_no_modifier_rejects_invalid_modifier_for_different_format()
 		{},
 	} );
 	CHECK( plan.mode == OutputMode::Unsupported );
+	CHECK( plan.rejection == Rejection::NoKmsImplicitModifier );
 }
 
 void test_no_modifier_xr24_rejects_each_missing_optimal_feature()

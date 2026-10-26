@@ -71,17 +71,17 @@ OutputPlan chooseNoModifierOutputPlan( const PlanInput &input, bool hasVulkanFor
 	if ( !hasVulkanFormat )
 		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoKmsFormat };
 
-	bool hasKmsFormat = false;
+	bool hasKmsImplicitModifier = false;
 	for ( const KmsModifier &kms : input.kmsModifiers )
 	{
-		if ( kms.format == input.format )
+		if ( kms.format == input.format && kms.modifier == InvalidModifier )
 		{
-			hasKmsFormat = true;
+			hasKmsImplicitModifier = true;
 			break;
 		}
 	}
-	if ( !hasKmsFormat )
-		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoKmsFormat };
+	if ( !hasKmsImplicitModifier )
+		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoKmsImplicitModifier };
 
 	if ( !hasFeatures( input.optimalFeatures, kCompositionFeatures ) )
 		return { OutputMode::Unsupported, InvalidModifier, Rejection::NoOptimalComposition };

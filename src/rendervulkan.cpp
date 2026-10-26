@@ -3608,6 +3608,7 @@ static const char *outputPlanRejectionName( gamescope::output_staging::Rejection
 	{
 		case Rejection::Accepted: return "none";
 		case Rejection::NoKmsFormat: return "no KMS format/modifier";
+		case Rejection::NoKmsImplicitModifier: return "no KMS implicit modifier";
 		case Rejection::NoOptimalComposition: return "no optimal composition usage";
 		case Rejection::NoKmsLinearModifier: return "no KMS linear modifier";
 		case Rejection::NoExportableLinearTransferDst: return "no exportable linear transfer destination";
