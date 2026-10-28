@@ -221,6 +221,35 @@ void test_capture_and_scanout_contract()
 	CHECK( !normal.rotateBeforeStaging );
 }
 
+void test_scanout_rotation_path_selection()
+{
+	constexpr uint64_t rotate0 = uint64_t{ 1 } << 0;
+	constexpr uint64_t rotate90 = uint64_t{ 1 } << 1;
+	constexpr uint64_t rotate180 = uint64_t{ 1 } << 2;
+	constexpr uint64_t rotate270 = uint64_t{ 1 } << 3;
+
+	// A property that cannot express the requested transform must not suppress
+	// the software rotation path. This is the A133 right-up failure: its plane
+	// exposes rotation, but the requested 180-degree value is unavailable.
+	CHECK( requiresVulkanOutputRotation( Transform::Rotate180,
+		rotate0 | rotate90 | rotate270 ) );
+
+	// Positive control: use KMS when the exact requested value is supported.
+	CHECK( !requiresVulkanOutputRotation( Transform::Rotate180,
+		rotate0 | rotate90 | rotate180 | rotate270 ) );
+
+	// A clockwise logical quarter-turn maps to DRM's counter-clockwise 270 bit.
+	CHECK( !requiresVulkanOutputRotation( Transform::Rotate90,
+		rotate0 | rotate270 ) );
+	CHECK( requiresVulkanOutputRotation( Transform::Rotate90,
+		rotate0 | rotate90 ) );
+
+	// Normal output needs no software transform, and an absent property keeps
+	// transformed output on the software path.
+	CHECK( !requiresVulkanOutputRotation( Transform::Normal, std::nullopt ) );
+	CHECK( requiresVulkanOutputRotation( Transform::Rotate270, std::nullopt ) );
+}
+
 void test_output_ring_rebuild_matrix()
 {
 	constexpr std::array transforms = {
@@ -584,6 +613,7 @@ int main()
 	test_asymmetric_pixels_and_inverse_mappings();
 	test_layout_stride_damage_cursor_and_overlay_coordinates();
 	test_capture_and_scanout_contract();
+	test_scanout_rotation_path_selection();
 	test_output_ring_rebuild_matrix();
 	test_native_base_and_system_overlay_plane_records();
 	test_client_transform_proof();
