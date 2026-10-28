@@ -296,6 +296,32 @@ FrameContract frameContract( Extent logicalExtent, Transform outputTransform )
 	};
 }
 
+bool requiresVulkanOutputRotation( Transform transform,
+	std::optional<uint64_t> supportedKmsRotationMask )
+{
+	if ( transform == Transform::Normal )
+		return false;
+
+	uint64_t requiredKmsRotation = 0;
+	switch ( transform )
+	{
+		case Transform::Rotate90:
+			requiredKmsRotation = uint64_t{ 1 } << 3; // DRM_MODE_ROTATE_270
+			break;
+		case Transform::Rotate180:
+			requiredKmsRotation = uint64_t{ 1 } << 2; // DRM_MODE_ROTATE_180
+			break;
+		case Transform::Rotate270:
+			requiredKmsRotation = uint64_t{ 1 } << 1; // DRM_MODE_ROTATE_90
+			break;
+		case Transform::Normal:
+			break;
+	}
+
+	return !supportedKmsRotationMask ||
+		( *supportedKmsRotationMask & requiredKmsRotation ) == 0;
+}
+
 OutputRingState requiredOutputRingState( Extent logicalExtent,
 	Transform physicalTransform, bool rotateInVulkan )
 {
