@@ -238,6 +238,7 @@ namespace gamescope
 	{
 		uint32_t uPropertyId = 0ul;
 		uint64_t ulValue = 0ul;
+		std::optional<uint64_t> ulSupportedBitmask;
 	};
 	using DRMObjectRawProperties = std::unordered_map<std::string, DRMObjectRawProperty>;
 
@@ -277,6 +278,7 @@ namespace gamescope
 		uint64_t GetCurrentValue() const { return m_ulCurrentValue; }
 		uint64_t GetInitialValue() const { return m_ulInitialValue; }
 		uint32_t GetPropertyId() const { return m_uPropertyId; }
+		std::optional<uint64_t> GetSupportedBitmask() const { return m_ulSupportedBitmask; }
 		int SetPendingValue( drmModeAtomicReq *pRequest, uint64_t ulValue, bool bForce );
 
 		void OnCommit();
@@ -288,6 +290,7 @@ namespace gamescope
 		uint64_t m_ulPendingValue = 0ul;
 		uint64_t m_ulCurrentValue = 0ul;
 		uint64_t m_ulInitialValue = 0ul;
+		std::optional<uint64_t> m_ulSupportedBitmask;
 	};
 
 	class CDRMPlane final : public CDRMAtomicTypedObject<DRM_MODE_OBJECT_PLANE>
@@ -2067,7 +2070,22 @@ namespace gamescope
 				continue;
 			defer( drmModeFreeProperty( pProperty ) );
 
-			rawProperties[ pProperty->name ] = DRMObjectRawProperty{ pProperty->prop_id, pProperties->prop_values[ i ] };
+			std::optional<uint64_t> ulSupportedBitmask;
+			if ( pProperty->flags & DRM_MODE_PROP_BITMASK )
+			{
+				ulSupportedBitmask = 0;
+				for ( int j = 0; j < pProperty->count_enums; j++ )
+				{
+					if ( pProperty->enums[j].value < 64 )
+						*ulSupportedBitmask |= uint64_t{ 1 } << pProperty->enums[j].value;
+				}
+			}
+
+			rawProperties[ pProperty->name ] = DRMObjectRawProperty{
+				.uPropertyId = pProperty->prop_id,
+				.ulValue = pProperties->prop_values[ i ],
+				.ulSupportedBitmask = ulSupportedBitmask,
+			};
 		}
 
 		return rawProperties;
@@ -2083,6 +2101,7 @@ namespace gamescope
 		, m_ulPendingValue{ rawProperty.ulValue }
 		, m_ulCurrentValue{ rawProperty.ulValue }
 		, m_ulInitialValue{ rawProperty.ulValue }
+		, m_ulSupportedBitmask{ rawProperty.ulSupportedBitmask }
 	{
 	}
 
@@ -4195,8 +4214,9 @@ namespace gamescope
 			const output_rotation::Transform transform =
 				output_rotation::transformFromPanelOrientation(
 					g_DRM.pConnector->GetCurrentOrientation() );
-			return transform != output_rotation::Transform::Normal &&
-				!g_DRM.pPrimaryPlane->GetProperties().rotation.has_value();
+			const auto &rotation = g_DRM.pPrimaryPlane->GetProperties().rotation;
+			return output_rotation::requiresVulkanOutputRotation( transform,
+				rotation ? rotation->GetSupportedBitmask() : std::nullopt );
 		}
 
 		virtual bool UsesVulkanSwapchain() const override

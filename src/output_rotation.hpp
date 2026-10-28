@@ -92,6 +92,12 @@ struct FrameContract
 
 FrameContract frameContract( Extent logicalExtent, Transform outputTransform );
 
+// DRM plane rotation values are a bitmask. A logical clockwise quarter-turn
+// uses DRM's counter-clockwise bit, so callers must not infer support from the
+// mere presence of the property.
+bool requiresVulkanOutputRotation( Transform transform,
+	std::optional<uint64_t> supportedKmsRotationMask );
+
 struct OutputRingState
 {
 	Extent logicalExtent;
