@@ -2075,10 +2075,8 @@ namespace gamescope
 			{
 				ulSupportedBitmask = 0;
 				for ( int j = 0; j < pProperty->count_enums; j++ )
-				{
-					if ( pProperty->enums[j].value < 64 )
-						*ulSupportedBitmask |= uint64_t{ 1 } << pProperty->enums[j].value;
-				}
+					*ulSupportedBitmask = output_rotation::mergeKmsRotationPropertyEnum(
+						*ulSupportedBitmask, pProperty->enums[j].value );
 			}
 
 			rawProperties[ pProperty->name ] = DRMObjectRawProperty{

@@ -296,6 +296,12 @@ FrameContract frameContract( Extent logicalExtent, Transform outputTransform )
 	};
 }
 
+uint64_t mergeKmsRotationPropertyEnum( uint64_t supportedMask,
+	uint64_t enumValue )
+{
+	return supportedMask | enumValue;
+}
+
 bool requiresVulkanOutputRotation( Transform transform,
 	std::optional<uint64_t> supportedKmsRotationMask )
 {
