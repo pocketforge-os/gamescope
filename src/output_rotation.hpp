@@ -98,6 +98,10 @@ FrameContract frameContract( Extent logicalExtent, Transform outputTransform );
 bool requiresVulkanOutputRotation( Transform transform,
 	std::optional<uint64_t> supportedKmsRotationMask );
 
+// drmModePropertyRes bitmask enum values are already numeric mask bits.
+uint64_t mergeKmsRotationPropertyEnum( uint64_t supportedMask,
+	uint64_t enumValue );
+
 struct OutputRingState
 {
 	Extent logicalExtent;

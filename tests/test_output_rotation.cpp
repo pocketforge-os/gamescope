@@ -228,6 +228,20 @@ void test_scanout_rotation_path_selection()
 	constexpr uint64_t rotate180 = uint64_t{ 1 } << 2;
 	constexpr uint64_t rotate270 = uint64_t{ 1 } << 3;
 
+	// libdrm returns each bitmask enum as its numeric mask value, not a bit
+	// index. Combining the values must therefore preserve 1, 2, 4, and 8.
+	uint64_t advertised = 0;
+	for ( uint64_t value : { rotate0, rotate90, rotate180, rotate270 } )
+		advertised = mergeKmsRotationPropertyEnum( advertised, value );
+	CHECK( advertised == 0x0f );
+
+	// Negative control: a sparse property remains sparse and cannot acquire
+	// the missing 180-degree bit through a second shift.
+	uint64_t sparse = mergeKmsRotationPropertyEnum( 0, rotate0 );
+	sparse = mergeKmsRotationPropertyEnum( sparse, rotate270 );
+	CHECK( sparse == ( rotate0 | rotate270 ) );
+	CHECK( requiresVulkanOutputRotation( Transform::Rotate180, sparse ) );
+
 	// A property that cannot express the requested transform must not suppress
 	// the software rotation path. This is the A133 right-up failure: its plane
 	// exposes rotation, but the requested 180-degree value is unavailable.
