@@ -99,11 +99,13 @@ if get_option('enable_gamescope_wsi_layer')
   subdir('layer')
 endif
 
-if get_option('enable_gamescope')
+pf_focus_client_tests_only = get_option('pf_focus_client_tests_only')
+
+if get_option('enable_gamescope') and not pf_focus_client_tests_only
   subdir('src')
 endif
 
-if get_option('enable_tests') and get_option('enable_gamescope')
+if get_option('enable_tests') and (get_option('enable_gamescope') or pf_focus_client_tests_only)
   subdir('tests')
 endif
 

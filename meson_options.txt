@@ -10,3 +10,4 @@ option('enable_openvr_support',      type : 'boolean', value : true, description
 option('enable_tests',               type : 'boolean', value : true, description: 'Build unit tests')
 option('legacy_x11_control_atoms',   type : 'boolean', value : false, description: 'Enable Steam-compatible X11 overlay, focus, and screenshot control properties')
 option('benchmark', type: 'feature', description: 'Benchmark tools')
+option('pf_focus_client_tests_only', type : 'boolean', value : false, description: 'Configure only the dependency-free pf-focus-client unit test (skips src/ and every other test; for hosts without the full gamescope dependency set)')

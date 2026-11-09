@@ -2,6 +2,21 @@ catch2_dep = dependency('catch2-with-main', required: true)
 
 srcdir = '../src'
 
+# compositor.sock focus client: pure C++ (no wlroots/wlserver), driven by a
+# fake router and the runtime golden fixtures in fixtures/pf-focus-client/.
+test_pf_focus_client = executable(
+	'test_pf_focus_client',
+	[srcdir / 'pf_focus_client.cpp', 'test_pf_focus_client.cpp'],
+	include_directories: [srcdir],
+	cpp_args: ['-DPF_FOCUS_FIXTURES="@0@"'.format(meson.current_source_dir() / 'fixtures' / 'pf-focus-client')],
+	dependencies: [catch2_dep],
+)
+test('pf-focus-client', test_pf_focus_client)
+
+if pf_focus_client_tests_only
+	subdir_done()
+endif
+
 test_xwayland_lifetime = executable(
 	'test_xwayland_lifetime',
 	'test_xwayland_lifetime.cpp',
