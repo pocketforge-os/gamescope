@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 EXPECTED_COUNTS = {
-	"gamescope": 21,
+	"gamescope": 22,
 	"libdisplay-info": 65,
 	"libliftoff": 58,
 }
@@ -36,6 +36,7 @@ REQUIRED = {
 	"gamescope:commit-fence",
 	"gamescope:no-fence-presentation",
 	"gamescope:xwayland-lifetime",
+	"gamescope:pf-focus-client",
 	"libdisplay-info:pocketforge-source-locator",
 	"libliftoff:check_ndebug",
 	"libliftoff:alloc@basic",
