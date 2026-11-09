@@ -114,6 +114,7 @@ src = [
   'edid.cpp',
   'wlserver.cpp',
   'wayland_security.cpp',
+  'pf_focus_client.cpp',
   'x11_control_policy.cpp',
   'xwayland_security.cpp',
   'vblankmanager.cpp',

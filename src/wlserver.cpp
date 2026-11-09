@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <xf86drm.h>
 #include <sys/eventfd.h>
+#include <sys/syscall.h>
 
 #include <linux/input-event-codes.h>
 
@@ -64,6 +65,7 @@
 #include "main.hpp"
 #include "steamcompmgr.hpp"
 #include "runtime_orientation.hpp"
+#include "pf_focus_client.hpp"
 #include "color_helpers.h"
 #include "log.hpp"
 #include "ime.hpp"
@@ -105,6 +107,9 @@ struct wlserver_t wlserver = {
 
 static gamescope::wayland_security::TrustedClientRegistry g_trusted_wayland_clients;
 static std::unique_ptr<gamescope::wayland_security::TrustedClientBroker> g_trusted_wayland_broker;
+
+// PocketForge compositor.sock focus client (glue below wlserver_init's helpers).
+static void pf_focus_queue_surface( struct wlr_surface *surface );
 
 struct wlserver_content_override {
 	gamescope_xwayland_server_t *server;
@@ -748,7 +753,11 @@ static void handle_wl_surface_destroy( struct wl_listener *l, void *data )
 		wlserver.mouse_focus_surface = nullptr;
 
 	if ( surf->wlr == wlserver.kb_focus_surface )
+	{
 		wlserver.kb_focus_surface = nullptr;
+		// Nulled without wlserver_keyboardfocus: tell the router focus is none.
+		pf_focus_queue_surface( nullptr );
+	}
 
 	wlserver.current_dropdown_surfaces.erase( surf->wlr );
 	wlserver.surfaces.erase( surf->wlr );
@@ -2203,6 +2212,190 @@ static gamescope::CAsyncWaiter g_LibEisWaiter( "gamescope-eis" );
 static std::unique_ptr<gamescope::GamescopeInputServer> g_InputServer;
 #endif
 
+
+// ---------------------------------------------------------------------------
+// PocketForge compositor.sock focus client glue.
+//
+// All socket I/O runs on the wlserver thread from wl_event_loop sources. The
+// focus hooks (wlserver_keyboardfocus, surface destroy) run under
+// wlserver_lock on either thread: they classify the surface, store the latest
+// triple in g_pfFocus.pending (also guarded by wlserver_lock, which every event
+// loop dispatch holds) and wake the loop through an eventfd. Several focus
+// changes inside one dispatch (e.g. the volume-key round trip through the root
+// server's surface) therefore coalesce into the final triple.
+
+static LogScope pf_focus_log( "pf_focus" );
+
+struct PfFocusGlue
+{
+	std::unique_ptr<gamescope::pf_focus::Client> client;
+	wl_event_source *fd_source = nullptr;
+	int watched_fd = -1;
+	wl_event_source *timer = nullptr;
+	wl_event_source *wake_source = nullptr;
+	int wake_fd = -1;
+	std::optional<gamescope::pf_focus::FocusState> pending;
+};
+static PfFocusGlue g_pfFocus;
+
+// /proc/<pid>/cgroup, read while the process is pinned by a pidfd. nullopt if
+// the pid cannot be pinned or exited (and could have been reused) meanwhile.
+static std::optional<std::string> pf_focus_pinned_cgroup( pid_t pid )
+{
+	if ( pid <= 0 )
+		return std::nullopt;
+	int pidfd = (int)syscall( SYS_pidfd_open, pid, 0 );
+	if ( pidfd < 0 )
+		return std::nullopt;
+	std::optional<std::string> result;
+	std::ifstream in( "/proc/" + std::to_string( pid ) + "/cgroup" );
+	if ( in )
+	{
+		std::stringstream ss;
+		ss << in.rdbuf();
+		// Still the same live process after the read?
+		if ( !in.bad() && syscall( SYS_pidfd_send_signal, pidfd, 0, nullptr, 0 ) == 0 )
+			result = ss.str();
+	}
+	close( pidfd );
+	return result;
+}
+
+static gamescope::pf_focus::FocusedSurface pf_focus_classify( struct wlr_surface *surface )
+{
+	gamescope::pf_focus::ClientFacts facts;
+	struct wl_client *client = ( surface && surface->resource ) ? wl_resource_get_client( surface->resource ) : nullptr;
+	facts.has_surface = client != nullptr;
+	if ( client )
+	{
+		for ( auto &server : wlserver.wlr.xwayland_servers )
+		{
+			if ( server && server->get_client() == client )
+				facts.is_xwayland = true;
+		}
+		facts.is_trusted = g_trusted_wayland_clients.contains( client );
+		if ( !facts.is_xwayland && !facts.is_trusted )
+		{
+			pid_t pid = 0;
+			wl_client_get_credentials( client, &pid, nullptr, nullptr );
+			facts.cgroup = pf_focus_pinned_cgroup( pid );
+		}
+	}
+	return gamescope::pf_focus::classify( facts );
+}
+
+static void pf_focus_queue_surface( struct wlr_surface *surface )
+{
+	if ( g_pfFocus.wake_fd < 0 )
+		return;
+	assert( wlserver_is_lock_held() );
+	gamescope::pf_focus::FocusState state;
+	state.surface = pf_focus_classify( surface );
+	g_pfFocus.pending = std::move( state );
+	uint64_t one = 1;
+	if ( write( g_pfFocus.wake_fd, &one, sizeof( one ) ) < 0 && errno != EAGAIN )
+		pf_focus_log.errorf_errno( "eventfd write failed" );
+}
+
+static int pf_focus_handle_fd( int, uint32_t mask, void * )
+{
+	if ( g_pfFocus.client )
+	{
+		bool readable = mask & ( WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR );
+		g_pfFocus.client->dispatch( readable, mask & WL_EVENT_WRITABLE );
+	}
+	return 0;
+}
+
+static int pf_focus_handle_timer( void * )
+{
+	if ( g_pfFocus.client )
+		g_pfFocus.client->reconnect();
+	return 0;
+}
+
+static int pf_focus_handle_wake( int fd, uint32_t, void * )
+{
+	uint64_t count;
+	while ( read( fd, &count, sizeof( count ) ) > 0 ) {}
+	if ( g_pfFocus.client && g_pfFocus.pending )
+	{
+		auto state = std::move( *g_pfFocus.pending );
+		g_pfFocus.pending.reset();
+		g_pfFocus.client->set_focus( state );
+	}
+	return 0;
+}
+
+static void pf_focus_watch_fd( int fd, bool want_write )
+{
+	if ( g_pfFocus.fd_source && g_pfFocus.watched_fd != fd )
+	{
+		wl_event_source_remove( g_pfFocus.fd_source );
+		g_pfFocus.fd_source = nullptr;
+		g_pfFocus.watched_fd = -1;
+	}
+	if ( fd < 0 )
+		return;
+	uint32_t mask = WL_EVENT_READABLE | ( want_write ? WL_EVENT_WRITABLE : 0 );
+	if ( !g_pfFocus.fd_source )
+	{
+		g_pfFocus.fd_source = wl_event_loop_add_fd( wlserver.event_loop, fd, mask, pf_focus_handle_fd, nullptr );
+		g_pfFocus.watched_fd = g_pfFocus.fd_source ? fd : -1;
+		if ( !g_pfFocus.fd_source )
+			pf_focus_log.errorf( "wl_event_loop_add_fd failed for compositor.sock" );
+	}
+	else
+		wl_event_source_fd_update( g_pfFocus.fd_source, mask );
+}
+
+static void pf_focus_init()
+{
+	// GAMESCOPE_PF_FOCUS_SOCKET overrides the router path; empty disables.
+	const char *configured = getenv( "GAMESCOPE_PF_FOCUS_SOCKET" );
+	std::string path = configured ? configured : gamescope::pf_focus::CompositorSocket;
+	if ( path.empty() )
+	{
+		pf_focus_log.infof( "compositor.sock focus client disabled" );
+		return;
+	}
+
+	g_pfFocus.wake_fd = eventfd( 0, EFD_CLOEXEC | EFD_NONBLOCK );
+	if ( g_pfFocus.wake_fd < 0 )
+	{
+		pf_focus_log.errorf_errno( "eventfd failed; focus client disabled" );
+		return;
+	}
+	g_pfFocus.wake_source = wl_event_loop_add_fd( wlserver.event_loop, g_pfFocus.wake_fd,
+		WL_EVENT_READABLE, pf_focus_handle_wake, nullptr );
+	g_pfFocus.timer = wl_event_loop_add_timer( wlserver.event_loop, pf_focus_handle_timer, nullptr );
+	if ( !g_pfFocus.wake_source || !g_pfFocus.timer )
+	{
+		pf_focus_log.errorf( "event source setup failed; focus client disabled" );
+		if ( g_pfFocus.wake_source )
+			wl_event_source_remove( g_pfFocus.wake_source );
+		if ( g_pfFocus.timer )
+			wl_event_source_remove( g_pfFocus.timer );
+		g_pfFocus.wake_source = g_pfFocus.timer = nullptr;
+		close( g_pfFocus.wake_fd );
+		g_pfFocus.wake_fd = -1;
+		return;
+	}
+
+	g_pfFocus.client = std::make_unique<gamescope::pf_focus::Client>( path, gamescope::pf_focus::Client::Hooks{
+		pf_focus_watch_fd,
+		[]( std::chrono::milliseconds delay ) {
+			wl_event_source_timer_update( g_pfFocus.timer, std::max<int>( 1, (int)delay.count() ) );
+		},
+		[]( const std::string &msg ) { pf_focus_log.infof( "%s", msg.c_str() ); },
+	} );
+	// Seed the current focus so the first snapshot is accurate.
+	gamescope::pf_focus::FocusState state;
+	state.surface = pf_focus_classify( wlserver.kb_focus_surface );
+	g_pfFocus.client->set_focus( state );
+	g_pfFocus.client->reconnect();
+}
+
 bool wlserver_init( void ) {
 	assert( wlserver.display != nullptr );
 	initialize_runtime_orientation();
@@ -2413,6 +2606,8 @@ bool wlserver_init( void ) {
 			}
 		}
 	}
+
+	pf_focus_init();
 
 	return true;
 }
@@ -2696,7 +2891,8 @@ void wlserver_keyboardfocus( struct wlr_surface *surface, bool bConstrain )
 {
 	assert( wlserver_is_lock_held() );
 
-	if (wlserver.kb_focus_surface != surface) {
+	const bool bFocusChanged = wlserver.kb_focus_surface != surface;
+	if (bFocusChanged) {
 		auto old_wl_surf = get_wl_surface_info( wlserver.kb_focus_surface );
 		if (old_wl_surf && old_wl_surf->xdg_surface && old_wl_surf->xdg_surface->xdg_surface && old_wl_surf->xdg_surface->xdg_surface->toplevel)
 			wlr_xdg_toplevel_set_activated(old_wl_surf->xdg_surface->xdg_surface->toplevel, false);
@@ -2716,6 +2912,8 @@ void wlserver_keyboardfocus( struct wlr_surface *surface, bool bConstrain )
 		wlr_seat_keyboard_notify_enter( wlserver.wlr.seat, surface, keyboard->keycodes, keyboard->num_keycodes, &keyboard->modifiers);
 
 	wlserver.kb_focus_surface = surface;
+	if ( bFocusChanged )
+		pf_focus_queue_surface( surface );
 
 	if ( bConstrain )
 	{
