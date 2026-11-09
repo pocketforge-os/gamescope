@@ -36,8 +36,8 @@ inline constexpr std::chrono::milliseconds ReconnectMax{ 2000 };
 // roles yet, so registry members are reported as `none`.
 struct FocusedSurface
 {
-	enum class Kind { None, App };
-	Kind kind = Kind::None;
+	enum class Kind { NoSurface, App }; // not `None`: X11 #defines it
+	Kind kind = Kind::NoSurface;
 	std::string app_id;
 
 	static FocusedSurface none() { return {}; }

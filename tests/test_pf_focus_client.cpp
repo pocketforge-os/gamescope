@@ -10,6 +10,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+// wlserver.cpp includes the X11 headers before pf_focus_client.hpp, and X.h
+// #defines None, Success, Bool... Include it first here so a colliding
+// identifier in the header breaks this test, not only the full build.
+#include <X11/X.h>
+
 #include "pf_focus_client.hpp"
 
 #include <cerrno>
