@@ -10,7 +10,6 @@
 #include <fcntl.h>
 #include <xf86drm.h>
 #include <sys/eventfd.h>
-#include <sys/syscall.h>
 
 #include <linux/input-event-codes.h>
 
@@ -86,10 +85,8 @@
 #include <algorithm>
 #include <array>
 #include <cinttypes>
-#include <fstream>
 #include <list>
 #include <set>
-#include <sstream>
 
 static LogScope wl_log("wlserver");
 
@@ -2238,29 +2235,6 @@ struct PfFocusGlue
 };
 static PfFocusGlue g_pfFocus;
 
-// /proc/<pid>/cgroup, read while the process is pinned by a pidfd. nullopt if
-// the pid cannot be pinned or exited (and could have been reused) meanwhile.
-static std::optional<std::string> pf_focus_pinned_cgroup( pid_t pid )
-{
-	if ( pid <= 0 )
-		return std::nullopt;
-	int pidfd = (int)syscall( SYS_pidfd_open, pid, 0 );
-	if ( pidfd < 0 )
-		return std::nullopt;
-	std::optional<std::string> result;
-	std::ifstream in( "/proc/" + std::to_string( pid ) + "/cgroup" );
-	if ( in )
-	{
-		std::stringstream ss;
-		ss << in.rdbuf();
-		// Still the same live process after the read?
-		if ( !in.bad() && syscall( SYS_pidfd_send_signal, pidfd, 0, nullptr, 0 ) == 0 )
-			result = ss.str();
-	}
-	close( pidfd );
-	return result;
-}
-
 static gamescope::pf_focus::FocusedSurface pf_focus_classify( struct wlr_surface *surface )
 {
 	gamescope::pf_focus::ClientFacts facts;
@@ -2278,7 +2252,7 @@ static gamescope::pf_focus::FocusedSurface pf_focus_classify( struct wlr_surface
 		{
 			pid_t pid = 0;
 			wl_client_get_credentials( client, &pid, nullptr, nullptr );
-			facts.cgroup = pf_focus_pinned_cgroup( pid );
+			facts.cgroup = gamescope::pf_focus::pinned_cgroup( pid );
 		}
 	}
 	return gamescope::pf_focus::classify( facts );

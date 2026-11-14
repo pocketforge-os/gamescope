@@ -22,6 +22,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <stddef.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -29,7 +32,10 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 using namespace gamescope::pf_focus;
@@ -51,6 +57,70 @@ static FocusState app_focus( const char *id )
 	FocusState f;
 	f.surface = FocusedSurface::app( id );
 	return f;
+}
+
+static bool deny_pidfd_send_signal()
+{
+	// Model the image's cross-UID compositor/app boundary without requiring
+	// root: signal permission fails, while pidfd polling and /proc remain usable.
+	const sock_filter filter[] = {
+		BPF_STMT( BPF_LD | BPF_W | BPF_ABS, offsetof( seccomp_data, nr ) ),
+		BPF_JUMP( BPF_JMP | BPF_JEQ | BPF_K, SYS_pidfd_send_signal, 0, 1 ),
+		BPF_STMT( BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM ),
+		BPF_STMT( BPF_RET | BPF_K, SECCOMP_RET_ALLOW ),
+	};
+	const sock_fprog program = {
+		.len = (unsigned short)( sizeof( filter ) / sizeof( filter[0] ) ),
+		.filter = const_cast<sock_filter *>( filter ),
+	};
+	return prctl( PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0 ) == 0 &&
+		prctl( PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program ) == 0;
+}
+
+static bool native_identity_lookup_survives_signal_denial()
+{
+	int keepalive[2];
+	if ( pipe2( keepalive, O_CLOEXEC ) != 0 )
+		return false;
+	pid_t target = fork();
+	if ( target < 0 )
+	{
+		close( keepalive[0] );
+		close( keepalive[1] );
+		return false;
+	}
+	if ( target == 0 )
+	{
+		close( keepalive[1] );
+		char byte;
+		(void)read( keepalive[0], &byte, 1 );
+		_exit( 0 );
+	}
+	close( keepalive[0] );
+
+	std::ifstream cgroup_file( "/proc/" + std::to_string( target ) + "/cgroup" );
+	std::stringstream cgroup;
+	cgroup << cgroup_file.rdbuf();
+	bool expected_read = cgroup_file.good() || cgroup_file.eof();
+
+	pid_t probe = fork();
+	if ( probe == 0 )
+	{
+		bool passed = deny_pidfd_send_signal();
+		auto got = pinned_cgroup( target );
+		passed = passed && got && *got == cgroup.str();
+		_exit( passed ? 0 : 1 );
+	}
+
+	int probe_status = 0;
+	if ( probe > 0 )
+		(void)waitpid( probe, &probe_status, 0 );
+	close( keepalive[1] );
+	int target_status = 0;
+	(void)waitpid( target, &target_status, 0 );
+
+	return expected_read && probe > 0 && WIFEXITED( probe_status ) &&
+		WEXITSTATUS( probe_status ) == 0 && WIFEXITED( target_status );
 }
 
 // ---------------------------------------------------------------- encoder
@@ -346,6 +416,74 @@ struct Harness
 };
 
 } // namespace
+
+TEST_CASE( "native_wayland_focus_gain_missing: committed mapped app reaches the router" )
+{
+	// R4 runs Gamescope and pf-app@ services under different UIDs. Reproduce
+	// that permission boundary before asserting the resulting focus route.
+	REQUIRE( native_identity_lookup_survives_signal_denial() );
+
+	FakeRouter router;
+	router.listen();
+	Harness h( router.path );
+	h.client.reconnect();
+	router.accept();
+	CHECK( router.recv() == read_golden( "register.json" ) );
+	router.send( R"({"version":1,"type":"registered","epoch":1})" );
+	h.pump();
+	CHECK( router.recv() == read_golden( "state_snapshot.json" ) );
+
+	const std::string app_cgroup =
+		"0::/system.slice/system-pf\\x2dapp.slice/pf-app@org.example.game.service\n";
+	ClientFacts app;
+	app.has_surface = true;
+	app.cgroup = app_cgroup;
+	auto route = [&]( const ClientFacts &facts ) {
+		FocusState focus;
+		focus.surface = classify( facts );
+		h.client.set_focus( focus );
+	};
+	auto lose_focus = [&] { h.client.set_focus( FocusState{} ); };
+	auto expect_app = [&] {
+		route( app );
+		CHECK( router.recv() == read_golden( "focus.json" ) );
+	};
+
+	// Creation, the buffer commit/map, and an unfocused mapped surface do not
+	// publish a focus transition on their own.
+	CHECK( router.recv() == "" );
+
+	// wlserver_keyboardfocus receives this only after xdg_toplevel map and the
+	// native focus selection. It must complete the route as App gained.
+	expect_app();
+
+	// Focus loss and unmap queue a null surface at the wlserver boundary.
+	lose_focus();
+	CHECK( router.recv() == encode_focus( 1, FocusState{} ) );
+	expect_app();
+	lose_focus();
+	CHECK( router.recv() == encode_focus( 1, FocusState{} ) );
+	expect_app();
+
+	// XWayland and cgroup spoofing remain rejected by the classifier.
+	ClientFacts xwayland = app;
+	xwayland.is_xwayland = true;
+	route( xwayland );
+	CHECK( router.recv() == encode_focus( 1, FocusState{} ) );
+	expect_app();
+
+	ClientFacts spoofed = app;
+	spoofed.cgroup = "0::/system.slice/pf-app@org.example.game.service\n";
+	route( spoofed );
+	CHECK( router.recv() == encode_focus( 1, FocusState{} ) );
+	expect_app();
+
+	// A destroyed surface fails closed to the existing loss event.
+	ClientFacts destroyed = app;
+	destroyed.has_surface = false;
+	route( destroyed );
+	CHECK( router.recv() == encode_focus( 1, FocusState{} ) );
+}
 
 TEST_CASE( "fake router: register, state_snapshot, focus, EOF and reconnect" )
 {

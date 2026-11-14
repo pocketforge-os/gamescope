@@ -22,6 +22,8 @@
 #include <string_view>
 #include <vector>
 
+#include <sys/types.h>
+
 namespace gamescope::pf_focus
 {
 
@@ -90,6 +92,10 @@ struct RouterMessage
 std::optional<RouterMessage> decode_router_message( std::string_view body );
 
 // ---- Surface classification ----
+// Read /proc/<pid>/cgroup while a pidfd pins the process. nullopt if the
+// process cannot be pinned or exits during the lookup.
+std::optional<std::string> pinned_cgroup( pid_t pid );
+
 // Port of pf_peer_identity::app_id_from_unit.
 std::optional<std::string> app_id_from_unit( std::string_view unit );
 // Port of pf_peer_identity::service_unit_from_cgroup (leaf + app slice checks).
