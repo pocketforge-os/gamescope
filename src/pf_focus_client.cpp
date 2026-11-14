@@ -5,10 +5,13 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <fstream>
 #include <map>
+#include <sstream>
 
-
+#include <poll.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -431,6 +434,34 @@ std::optional<RouterMessage> decode_router_message( std::string_view body )
 }
 
 // ------------------------------------------------------------ classification
+
+std::optional<std::string> pinned_cgroup( pid_t pid )
+{
+	if ( pid <= 0 )
+		return std::nullopt;
+	int pidfd = (int)syscall( SYS_pidfd_open, pid, 0 );
+	if ( pidfd < 0 )
+		return std::nullopt;
+	pollfd process = { .fd = pidfd, .events = POLLIN };
+	std::optional<std::string> result;
+	// A live pidfd is not readable. Polling detects exit without requiring the
+	// compositor user to have signal permission for the app user.
+	if ( poll( &process, 1, 0 ) == 0 )
+	{
+		std::ifstream in( "/proc/" + std::to_string( pid ) + "/cgroup" );
+		if ( in )
+		{
+			std::stringstream ss;
+			ss << in.rdbuf();
+			process.revents = 0;
+			// Still the same live process after the read?
+			if ( !in.bad() && poll( &process, 1, 0 ) == 0 )
+				result = ss.str();
+		}
+	}
+	close( pidfd );
+	return result;
+}
 
 std::optional<std::string> app_id_from_unit( std::string_view unit )
 {
